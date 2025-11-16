@@ -14,6 +14,23 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
+// Config holds the configuration for the package rewriter
+type Config struct {
+	PackagePath string
+	TypeName    string
+	OutputDir   string
+	Recursive   bool // If true, recursively extract external type dependencies
+}
+
+// DeclInfo holds information about a type declaration
+type DeclInfo struct {
+	Name        string
+	Decl        ast.Decl
+	File        *ast.File
+	Comment     *ast.CommentGroup
+	PackagePath string // The package this declaration came from
+}
+
 // RecursiveRewriter handles recursive extraction of types across packages
 type RecursiveRewriter struct {
 	config         *Config
