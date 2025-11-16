@@ -81,30 +81,38 @@ import (
 			}
 
 			pkgInfo := &PackageInfo{
-				SourceImports: make(map[string]string),
+				SourceImports: make(map[string][]string),
+				NameToPath:    make(map[string]string),
 			}
 
 			r.collectSourceImports(pkgInfo, file)
 
-			// Check results
-			if len(pkgInfo.SourceImports) != len(tt.expected) {
-				t.Errorf("Expected %d imports, got %d: %v", len(tt.expected), len(pkgInfo.SourceImports), pkgInfo.SourceImports)
-			}
-
+			// Check results - verify each expected name appears in the slice
 			for path, expectedName := range tt.expected {
-				if gotName, ok := pkgInfo.SourceImports[path]; !ok {
-					t.Errorf("Expected import %s not found", path)
-				} else if gotName != expectedName {
-					t.Errorf("For path %s: expected name %s, got %s", path, expectedName, gotName)
+				names, ok := pkgInfo.SourceImports[path]
+				if !ok {
+					t.Errorf("Expected import path %s not found", path)
+					continue
+				}
+
+				found := false
+				for _, name := range names {
+					if name == expectedName {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("For path %s: expected name %s not found in %v", path, expectedName, names)
 				}
 			}
 
-			// Check no unexpected imports
-			for path, name := range pkgInfo.SourceImports {
-				if expectedName, ok := tt.expected[path]; !ok {
-					t.Errorf("Unexpected import: %s -> %s", path, name)
-				} else if name != expectedName {
-					t.Errorf("For path %s: expected name %s, got %s", path, expectedName, name)
+			// Check NameToPath reverse mapping
+			for path, expectedName := range tt.expected {
+				if gotPath, ok := pkgInfo.NameToPath[expectedName]; !ok {
+					t.Errorf("Expected name %s not found in NameToPath", expectedName)
+				} else if gotPath != path {
+					t.Errorf("For name %s: expected path %s, got %s", expectedName, path, gotPath)
 				}
 			}
 		})
@@ -115,7 +123,7 @@ func TestWalkTypeForDeps_SelectorExpr(t *testing.T) {
 	tests := []struct {
 		name            string
 		typeSource      string
-		sourceImports   map[string]string
+		nameToPath      map[string]string // name -> path mapping
 		expectedQueue   []TypeRef
 		expectedImports map[string]string
 	}{
@@ -125,8 +133,8 @@ func TestWalkTypeForDeps_SelectorExpr(t *testing.T) {
 type Foo struct {
 	Time metav1.Time
 }`,
-			sourceImports: map[string]string{
-				"k8s.io/apimachinery/pkg/apis/meta/v1": "metav1",
+			nameToPath: map[string]string{
+				"metav1": "k8s.io/apimachinery/pkg/apis/meta/v1",
 			},
 			expectedQueue: []TypeRef{
 				{PackagePath: "k8s.io/apimachinery/pkg/apis/meta/v1", TypeName: "Time"},
@@ -141,8 +149,8 @@ type Foo struct {
 type Foo struct {
 	Phase synccommon.OperationPhase
 }`,
-			sourceImports: map[string]string{
-				"github.com/argoproj/gitops-engine/pkg/sync/common": "synccommon",
+			nameToPath: map[string]string{
+				"synccommon": "github.com/argoproj/gitops-engine/pkg/sync/common",
 			},
 			expectedQueue: []TypeRef{
 				{PackagePath: "github.com/argoproj/gitops-engine/pkg/sync/common", TypeName: "OperationPhase"},
@@ -157,8 +165,8 @@ type Foo struct {
 type Foo struct {
 	metav1.TypeMeta
 }`,
-			sourceImports: map[string]string{
-				"k8s.io/apimachinery/pkg/apis/meta/v1": "metav1",
+			nameToPath: map[string]string{
+				"metav1": "k8s.io/apimachinery/pkg/apis/meta/v1",
 			},
 			expectedQueue: []TypeRef{
 				{PackagePath: "k8s.io/apimachinery/pkg/apis/meta/v1", TypeName: "TypeMeta"},
@@ -191,7 +199,8 @@ type Foo struct {
 					Types:   nil, // We won't check same-package types in this test
 				},
 				Imports:       make(map[string]string),
-				SourceImports: tt.sourceImports,
+				SourceImports: make(map[string][]string),
+				NameToPath:    tt.nameToPath,
 			}
 
 			// Find the struct type and walk it

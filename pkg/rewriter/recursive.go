@@ -34,11 +34,12 @@ type ModuleInfo struct {
 // PackageInfo holds information about a package being processed
 type PackageInfo struct {
 	Pkg           *packages.Package
-	Decls         map[string]*DeclInfo // key: type name
-	Imports       map[string]string    // key: package path, value: package name (imports actually used in generated code)
-	SourceImports map[string]string    // key: package path, value: package name (all imports from source files for lookup)
-	OutputSubdir  string               // subdirectory in output (e.g., "k8s.io/apimachinery/pkg/apis/meta/v1")
-	ModulePath    string               // module this package belongs to
+	Decls         map[string]*DeclInfo   // key: type name
+	Imports       map[string]string      // key: package path, value: package name (imports actually used in generated code)
+	SourceImports map[string][]string    // key: package path, value: all package names/aliases used across source files
+	NameToPath    map[string]string      // key: package name/alias, value: package path (reverse lookup)
+	OutputSubdir  string                 // subdirectory in output (e.g., "k8s.io/apimachinery/pkg/apis/meta/v1")
+	ModulePath    string                 // module this package belongs to
 }
 
 // TypeRef represents a reference to a type we need to extract
@@ -203,7 +204,8 @@ func (r *RecursiveRewriter) loadPackageInfo(pkgPath string) (*PackageInfo, error
 		Pkg:           pkg,
 		Decls:         make(map[string]*DeclInfo),
 		Imports:       make(map[string]string),
-		SourceImports: make(map[string]string),
+		SourceImports: make(map[string][]string),
+		NameToPath:    make(map[string]string),
 		OutputSubdir:  pkgPath,
 		ModulePath:    modulePath,
 	}
@@ -239,39 +241,65 @@ func (r *RecursiveRewriter) collectSourceImports(pkgInfo *PackageInfo, file *ast
 		// Determine the package name (either from alias or last component)
 		var pkgName string
 		hasExplicitAlias := false
+		isMangled := false
 		if imp.Name != nil {
 			pkgName = imp.Name.Name
 			hasExplicitAlias = true
-			// Skip auto-generated mangled names
-			// These look like: "github_com_argoproj_gitops_engine_pkg_sync_common"
-			// Real aliases are short like: "synccommon", "metav1", "v1alpha1"
-			// Heuristic: if it contains the full path with underscores or dots, skip it
-			pathMangled := strings.ReplaceAll(strings.ReplaceAll(path, "/", "_"), ".", "_")
-			if strings.Contains(pkgName, pathMangled) || len(pkgName) > 30 {
-				continue
+
+			// Detect auto-generated mangled names by checking if the alias contains
+			// multiple consecutive package path components separated by underscores.
+			// For example: "github_com_argoproj_gitops_engine_pkg_sync_common"
+			// Real user aliases like "synccommon", "metav1", "v1alpha1" don't match this pattern.
+			pathParts := strings.Split(strings.Trim(path, "/"), "/")
+			if len(pathParts) >= 3 {
+				// Check if the alias contains at least 3 path components joined by underscores
+				mangledPattern := strings.Join(pathParts, "_")
+				mangledPattern = strings.ReplaceAll(mangledPattern, ".", "_")
+				mangledPattern = strings.ReplaceAll(mangledPattern, "-", "_")
+				if strings.Contains(pkgName, mangledPattern) ||
+				   (len(pathParts) >= 3 && strings.Count(pkgName, "_") >= 2) {
+					isMangled = true
+				}
 			}
 		} else {
 			pkgName = filepath.Base(path)
 		}
 
-		// Add to SourceImports for lookup, preferring explicit aliases over inferred names
-		if existing, exists := pkgInfo.SourceImports[path]; exists {
-			// If we have an explicit alias and the existing one is inferred (base name), replace it
-			basePackageName := filepath.Base(path)
-			existingIsInferred := existing == basePackageName
+		// Skip mangled import names
+		if isMangled {
+			slog.Debug("Skipping mangled import name",
+				"path", path,
+				"mangledName", pkgName)
+			continue
+		}
 
-			// Prefer explicit aliases over inferred base names
-			if hasExplicitAlias && existingIsInferred {
-				pkgInfo.SourceImports[path] = pkgName
-			} else if !hasExplicitAlias && !existingIsInferred {
-				// Both are explicit or both inferred - prefer shorter
-				if len(pkgName) < len(existing) {
-					pkgInfo.SourceImports[path] = pkgName
-				}
+		// Add to SourceImports (all aliases) and NameToPath (reverse lookup)
+		// Check if this name/alias already exists for this path
+		alreadyExists := false
+		for _, existingName := range pkgInfo.SourceImports[path] {
+			if existingName == pkgName {
+				alreadyExists = true
+				break
 			}
-			// Otherwise keep existing
-		} else {
-			pkgInfo.SourceImports[path] = pkgName
+		}
+
+		if !alreadyExists {
+			pkgInfo.SourceImports[path] = append(pkgInfo.SourceImports[path], pkgName)
+
+			// Build reverse map: name -> path
+			// If the same name maps to different paths, prefer explicit aliases
+			if existingPath, exists := pkgInfo.NameToPath[pkgName]; exists {
+				// Name conflict - prefer explicit alias over inferred
+				if hasExplicitAlias {
+					pkgInfo.NameToPath[pkgName] = path
+					slog.Debug("Name conflict - preferring explicit alias",
+						"name", pkgName,
+						"oldPath", existingPath,
+						"newPath", path)
+				}
+			} else {
+				pkgInfo.NameToPath[pkgName] = path
+			}
 		}
 	}
 }
@@ -329,18 +357,15 @@ func (r *RecursiveRewriter) walkTypeForDeps(pkgInfo *PackageInfo, expr ast.Expr)
 		}
 
 	case *ast.SelectorExpr:
-		// This is a type from another package (e.g., metav1.Time)
+		// This is a type from another package (e.g., metav1.Time, synccommon.OperationPhase)
 		if ident, ok := t.X.(*ast.Ident); ok {
-			// Look up the package in the package's imports
+			// Look up the package using the name (reverse lookup)
 			pkgName := ident.Name
 			var externalPkgPath string
 
-			// First check SourceImports (collected from source files)
-			for path, name := range pkgInfo.SourceImports {
-				if name == pkgName {
-					externalPkgPath = path
-					break
-				}
+			// Use NameToPath for direct reverse lookup
+			if path, exists := pkgInfo.NameToPath[pkgName]; exists {
+				externalPkgPath = path
 			}
 
 			// If not found, check all imported packages from the loader
@@ -353,7 +378,7 @@ func (r *RecursiveRewriter) walkTypeForDeps(pkgInfo *PackageInfo, expr ast.Expr)
 				}
 			}
 
-			// If still not found, check our Imports map
+			// If still not found, check our Imports map (already used imports)
 			if externalPkgPath == "" {
 				for path, name := range pkgInfo.Imports {
 					if name == pkgName {
@@ -368,7 +393,7 @@ func (r *RecursiveRewriter) walkTypeForDeps(pkgInfo *PackageInfo, expr ast.Expr)
 				// Queue this external type for extraction
 				r.queueType(externalPkgPath, typeName)
 
-				// Record the import for this package (only if we're actually using it)
+				// Record the import for this package with the correct alias
 				pkgInfo.Imports[externalPkgPath] = pkgName
 			}
 		}
