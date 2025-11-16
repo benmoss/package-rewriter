@@ -6,6 +6,7 @@ import (
 	"go/format"
 	"go/token"
 	"go/types"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,7 +93,7 @@ func (r *Rewriter) loadPackage() error {
 	if len(r.pkg.Errors) > 0 {
 		// Log errors but continue - the package might still be parseable
 		for _, err := range r.pkg.Errors {
-			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			slog.Warn("Error loading package", "error", err)
 		}
 	}
 

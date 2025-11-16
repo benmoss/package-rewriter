@@ -183,7 +183,7 @@ func (r *RecursiveRewriter) loadPackageInfo(pkgPath string) (*PackageInfo, error
 
 	if len(pkg.Errors) > 0 {
 		for _, err := range pkg.Errors {
-			fmt.Fprintf(os.Stderr, "Warning loading %s: %v\n", pkgPath, err)
+			slog.Warn("Error loading package", "path", pkgPath, "error", err)
 		}
 	}
 
