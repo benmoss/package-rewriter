@@ -19,7 +19,6 @@ type Config struct {
 	PackagePath string
 	TypeName    string
 	OutputDir   string
-	Recursive   bool // If true, recursively extract external type dependencies
 }
 
 // DeclInfo holds information about a type declaration
@@ -51,12 +50,12 @@ type ModuleInfo struct {
 // PackageInfo holds information about a package being processed
 type PackageInfo struct {
 	Pkg           *packages.Package
-	Decls         map[string]*DeclInfo   // key: type name
-	Imports       map[string]string      // key: package path, value: package name (imports actually used in generated code)
-	SourceImports map[string][]string    // key: package path, value: all package names/aliases used across source files
-	NameToPath    map[string]string      // key: package name/alias, value: package path (reverse lookup)
-	OutputSubdir  string                 // subdirectory in output (e.g., "k8s.io/apimachinery/pkg/apis/meta/v1")
-	ModulePath    string                 // module this package belongs to
+	Decls         map[string]*DeclInfo // key: type name
+	Imports       map[string]string    // key: package path, value: package name (imports actually used in generated code)
+	SourceImports map[string][]string  // key: package path, value: all package names/aliases used across source files
+	NameToPath    map[string]string    // key: package name/alias, value: package path (reverse lookup)
+	OutputSubdir  string               // subdirectory in output (e.g., "k8s.io/apimachinery/pkg/apis/meta/v1")
+	ModulePath    string               // module this package belongs to
 }
 
 // TypeRef represents a reference to a type we need to extract
@@ -84,6 +83,33 @@ func RewriteRecursive(config *Config) error {
 		PackagePath: config.PackagePath,
 		TypeName:    config.TypeName,
 	})
+
+	// Find and load go.mod
+	goModPath, err := FindGoMod()
+	var goMod *GoModManager
+	if err != nil {
+		slog.Warn("go.mod not found, replace directives will not be managed automatically", "error", err)
+	} else {
+		goMod, err = NewGoModManager(goModPath)
+		if err != nil {
+			slog.Warn("Failed to parse go.mod, replace directives will not be managed automatically", "error", err)
+			goMod = nil
+		} else {
+			// Remove existing replace directives for all modules (we'll add back only what we generate)
+			replaces := goMod.GetReplaces()
+			if len(replaces) > 0 {
+				slog.Info("Removing existing replace directives from go.mod", "count", len(replaces))
+				for modulePath := range replaces {
+					if err := goMod.RemoveReplace(modulePath); err != nil {
+						slog.Warn("Failed to remove replace directive", "module", modulePath, "error", err)
+					}
+				}
+				if err := goMod.Save(); err != nil {
+					slog.Warn("Failed to save go.mod after removing replace directives", "error", err)
+				}
+			}
+		}
+	}
 
 	// Process types recursively
 	for len(r.pendingTypes) > 0 {
@@ -113,7 +139,16 @@ func RewriteRecursive(config *Config) error {
 	}
 
 	// Generate output for all packages
-	return r.generateOutput()
+	if err := r.generateOutput(); err != nil {
+		return err
+	}
+
+	// Add replace directives for generated modules
+	if goMod != nil {
+		return r.updateGoModReplaces(goMod)
+	}
+
+	return nil
 }
 
 func (r *RecursiveRewriter) extractType(typeRef TypeRef) error {
@@ -274,7 +309,7 @@ func (r *RecursiveRewriter) collectSourceImports(pkgInfo *PackageInfo, file *ast
 				mangledPattern = strings.ReplaceAll(mangledPattern, ".", "_")
 				mangledPattern = strings.ReplaceAll(mangledPattern, "-", "_")
 				if strings.Contains(pkgName, mangledPattern) ||
-				   (len(pathParts) >= 3 && strings.Count(pkgName, "_") >= 2) {
+					(len(pathParts) >= 3 && strings.Count(pkgName, "_") >= 2) {
 					isMangled = true
 				}
 			}
@@ -545,9 +580,6 @@ func (r *RecursiveRewriter) generateOutput() error {
 		fmt.Printf("Generated: %s (%d types)\n", outputFile, len(pkgInfo.Decls))
 	}
 
-	// Print replace directives
-	r.printReplaceDirectives()
-
 	return nil
 }
 
@@ -589,12 +621,8 @@ func (r *RecursiveRewriter) generateModuleFiles() error {
 	return nil
 }
 
-func (r *RecursiveRewriter) printReplaceDirectives() {
-	fmt.Print("\n" + strings.Repeat("=", 70) + "\n")
-	fmt.Print("Add these replace directives to your go.mod:\n")
-	fmt.Print(strings.Repeat("=", 70) + "\n\n")
-
-	// Sort module paths for consistent output
+func (r *RecursiveRewriter) updateGoModReplaces(goMod *GoModManager) error {
+	// Get list of modules with generated code
 	var modulePaths []string
 	for modulePath := range r.modules {
 		if r.isStdlib(modulePath) {
@@ -613,21 +641,26 @@ func (r *RecursiveRewriter) printReplaceDirectives() {
 		}
 	}
 
-	// Simple sort
-	for i := 0; i < len(modulePaths); i++ {
-		for j := i + 1; j < len(modulePaths); j++ {
-			if modulePaths[i] > modulePaths[j] {
-				modulePaths[i], modulePaths[j] = modulePaths[j], modulePaths[i]
-			}
-		}
-	}
-
+	// Add replace directives
 	for _, modulePath := range modulePaths {
 		relPath := filepath.Join(r.config.OutputDir, modulePath)
-		fmt.Printf("replace %s => ./%s\n", modulePath, relPath)
+		// Ensure path starts with ./ for go.mod replace directive
+		if !filepath.IsAbs(relPath) && !strings.HasPrefix(relPath, ".") {
+			relPath = "./" + relPath
+		}
+		if err := goMod.AddReplace(modulePath, relPath); err != nil {
+			return fmt.Errorf("failed to add replace directive for %s: %w", modulePath, err)
+		}
+		slog.Info("Added replace directive", "module", modulePath, "path", relPath)
 	}
 
-	fmt.Print("\n" + strings.Repeat("=", 70) + "\n")
+	// Save go.mod
+	if err := goMod.Save(); err != nil {
+		return fmt.Errorf("failed to save go.mod: %w", err)
+	}
+
+	fmt.Printf("\nUpdated go.mod with %d replace directive(s)\n", len(modulePaths))
+	return nil
 }
 
 func (r *RecursiveRewriter) isStdlib(pkgPath string) bool {

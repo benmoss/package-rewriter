@@ -41,6 +41,7 @@ package-rewriter --package <package-path> --type <type-name> [--output <output-d
 - `--package`: Package path to extract from (required)
 - `--type`: Type name to extract (required)
 - `--output`: Output directory for generated code (default: `./generated`)
+- `-v`: Log level: `debug`, `info`, `warn`, `error` (default: `info`)
 
 ### Example
 
@@ -75,17 +76,6 @@ Generated: generated/k8s.io/apimachinery/pkg/runtime/types.go (2 types)
 Generated: generated/k8s.io/apimachinery/pkg/runtime/schema/types.go (2 types)
 Generated: generated/k8s.io/apimachinery/pkg/util/intstr/types.go (2 types)
 
-======================================================================
-Add these replace directives to your go.mod:
-======================================================================
-
-replace github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1 => ./generated/github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1
-replace github.com/argoproj/gitops-engine/pkg/health => ./generated/github.com/argoproj/gitops-engine/pkg/health
-replace k8s.io/apimachinery/pkg/runtime => ./generated/k8s.io/apimachinery/pkg/runtime
-replace k8s.io/apimachinery/pkg/runtime/schema => ./generated/k8s.io/apimachinery/pkg/runtime/schema
-replace k8s.io/apimachinery/pkg/util/intstr => ./generated/k8s.io/apimachinery/pkg/util/intstr
-
-======================================================================
 Successfully extracted Application from github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1 to ./generated
 ```
 
@@ -99,7 +89,10 @@ Successfully extracted Application from github.com/argoproj/argo-cd/v3/pkg/apis/
 - **📦 Multi-Package Output**: Generates separate directories for each extracted package
   - Preserves original package structure
   - Maintains proper import paths
-- **🔗 Automatic Replace Directives**: Prints ready-to-use `replace` directives for your go.mod
+- **🔗 Automatic go.mod Management**: Automatically updates your go.mod with `replace` directives
+  - Detects and removes existing replace directives before generation
+  - Adds new replace directives pointing to generated code after extraction
+  - No manual copy-paste needed!
 - **🏷️ Complete Type Information**: Preserves struct tags, comments, and type metadata
 - **🎯 Minimal Dependencies**: Only extracts what you actually use
 
@@ -122,22 +115,33 @@ The tool performs **fully recursive type extraction** across package boundaries:
    - Queue any new external types found
 6. **Continue Until Complete**: Repeat until all types are extracted or only stdlib types remain
 7. **Generate Output**: Create separate type files for each package with proper imports
-8. **Print Replace Directives**: Output ready-to-copy `replace` statements for go.mod
+8. **Update go.mod**: Automatically write `replace` directives to your go.mod file
 
 ## Using the Generated Code
 
-After extraction, the tool prints `replace` directives that you can add to your `go.mod`:
+After extraction, **the tool automatically updates your `go.mod`** with the necessary `replace` directives:
 
-```go
-// Copy these from the tool output and paste into your go.mod
-replace github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1 => ./generated/github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1
-replace github.com/argoproj/gitops-engine/pkg/health => ./generated/github.com/argoproj/gitops-engine/pkg/health
-replace k8s.io/apimachinery/pkg/runtime => ./generated/k8s.io/apimachinery/pkg/runtime
-replace k8s.io/apimachinery/pkg/runtime/schema => ./generated/k8s.io/apimachinery/pkg/runtime/schema
-replace k8s.io/apimachinery/pkg/util/intstr => ./generated/k8s.io/apimachinery/pkg/util/intstr
+```
+======================================================================
+Add these replace directives to your go.mod:
+======================================================================
+
+replace github.com/argoproj/argo-cd/v3 => ./generated/github.com/argoproj/argo-cd/v3
+replace github.com/argoproj/gitops-engine => ./generated/github.com/argoproj/gitops-engine
+replace k8s.io/apimachinery => ./generated/k8s.io/apimachinery
+
+======================================================================
+
+Updated go.mod with 3 replace directive(s)
 ```
 
-Then use the types normally in your code:
+The tool will:
+- Find your `go.mod` file (in the current directory or parent directories)
+- Remove any existing replace directives for the generated modules
+- Add new replace directives pointing to the generated code
+- Save the updated `go.mod`
+
+Then you can use the types normally in your code:
 
 ```go
 import v1alpha1 "github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
@@ -173,7 +177,7 @@ Go will automatically use your generated lightweight versions instead of the ful
 
 - [ ] Support for extracting multiple types in one run
 - [ ] Option to include constants and enums
-- [ ] Automatic `go.mod` replace directive generation
+- [x] Automatic `go.mod` replace directive generation
 - [ ] Support for extracting entire package hierarchies
 - [ ] Dead code elimination for unused fields in complex dependency graphs
 

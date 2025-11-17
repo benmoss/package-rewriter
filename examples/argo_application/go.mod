@@ -152,8 +152,8 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace (
-	github.com/argoproj/argo-cd/v3 => ./generated/github.com/argoproj/argo-cd/v3
-	github.com/argoproj/gitops-engine => ./generated/github.com/argoproj/gitops-engine
-	k8s.io/apimachinery => ./generated/k8s.io/apimachinery
-)
+replace github.com/argoproj/argo-cd/v3 => ./generated/github.com/argoproj/argo-cd/v3
+
+replace k8s.io/apimachinery => ./generated/k8s.io/apimachinery
+
+replace github.com/argoproj/gitops-engine => ./generated/github.com/argoproj/gitops-engine
