@@ -79,23 +79,6 @@ Generated: generated/k8s.io/apimachinery/pkg/util/intstr/types.go (2 types)
 Successfully extracted Application from github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1 to ./generated
 ```
 
-## Features
-
-- **🔄 Fully Recursive Extraction**: Automatically discovers and extracts types from external packages
-  - Starts with your target type
-  - Finds all type dependencies (fields, embedded types, etc.)
-  - Recursively extracts types from external packages (k8s.io, etc.)
-  - Continues until only stdlib types remain
-- **📦 Multi-Package Output**: Generates separate directories for each extracted package
-  - Preserves original package structure
-  - Maintains proper import paths
-- **🔗 Automatic go.mod Management**: Automatically updates your go.mod with `replace` directives
-  - Detects and removes existing replace directives before generation
-  - Adds new replace directives pointing to generated code after extraction
-  - No manual copy-paste needed!
-- **🏷️ Complete Type Information**: Preserves struct tags, comments, and type metadata
-- **🎯 Minimal Dependencies**: Only extracts what you actually use
-
 ## How It Works
 
 The tool performs **fully recursive type extraction** across package boundaries:
