@@ -13,7 +13,6 @@ package-rewriter
 *.out
 
 # Generated output
-generated/
 test-wasm/
 
 # Go workspace file
