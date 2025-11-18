@@ -106,6 +106,11 @@ func RewriteRecursive(config *Config) error {
 				}
 				if err := goMod.Save(); err != nil {
 					slog.Warn("Failed to save go.mod after removing replace directives", "error", err)
+				} else {
+					// Run go mod tidy after removing replace directives
+					if err := goMod.Tidy(); err != nil {
+						slog.Warn("Failed to run go mod tidy after removing replace directives", "error", err)
+					}
 				}
 			}
 		}
@@ -660,6 +665,14 @@ func (r *RecursiveRewriter) updateGoModReplaces(goMod *GoModManager) error {
 	}
 
 	fmt.Printf("\nUpdated go.mod with %d replace directive(s)\n", len(modulePaths))
+
+	// Run go mod tidy to clean up dependencies
+	if err := goMod.Tidy(); err != nil {
+		slog.Warn("Failed to run go mod tidy", "error", err)
+	} else {
+		slog.Info("Ran go mod tidy successfully")
+	}
+
 	return nil
 }
 

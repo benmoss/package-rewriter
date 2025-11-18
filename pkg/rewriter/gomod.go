@@ -3,6 +3,8 @@ package rewriter
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/mod/modfile"
@@ -75,6 +77,19 @@ func (m *GoModManager) GetReplaces() map[string]string {
 		replaces[replace.Old.Path] = replace.New.Path
 	}
 	return replaces
+}
+
+// Tidy runs 'go mod tidy' in the directory containing the go.mod file
+func (m *GoModManager) Tidy() error {
+	dir := filepath.Dir(m.path)
+	cmd := exec.Command("go", "mod", "tidy")
+	cmd.Dir = dir
+
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("go mod tidy failed: %w\nOutput: %s", err, string(output))
+	}
+
+	return nil
 }
 
 // FindGoMod finds the go.mod file starting from the current directory
