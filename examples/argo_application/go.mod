@@ -9,7 +9,7 @@ require (
 
 require (
 	github.com/argoproj/gitops-engine v0.7.1-0.20251006172252-b89b0871b414 // indirect
-	k8s.io/apimachinery v0.34.1 // indirect
+	k8s.io/apimachinery v0.35.0-alpha.1 // indirect
 )
 
 replace github.com/argoproj/argo-cd/v3 => ./generated/github.com/argoproj/argo-cd/v3
