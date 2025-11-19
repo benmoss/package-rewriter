@@ -1,0 +1,10 @@
+output: ./generated
+packages:
+  - package: github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1
+    types:
+      - Application
+      - AWSAuthConfig
+  - package: github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1
+    types:
+      - GithubProvider
+      - SecretStoreSpec

@@ -4,6 +4,15 @@ package runtime
 
 import "k8s.io/apimachinery/pkg/runtime/schema"
 
+// Object interface must be supported by all API types registered with Scheme. Since objects in a scheme are
+// expected to be serialized to the wire, the interface an Object must provide to the Scheme allows
+// serializers to set the kind, version, and group the object is represented as. An Object may choose
+// to return a no-op ObjectKindAccessor in cases where it is not expected to be serialized.
+type Object interface {
+	GetObjectKind() schema.ObjectKind
+	DeepCopyObject() Object
+}
+
 // RawExtension is used to hold extensions in external versions.
 //
 // To use this, make a field which has RawExtension as its type in your external, versioned
@@ -62,13 +71,4 @@ type RawExtension struct {
 	// Object can hold a representation of this extension - useful for working with versioned
 	// structs.
 	Object Object `json:"-"`
-}
-
-// Object interface must be supported by all API types registered with Scheme. Since objects in a scheme are
-// expected to be serialized to the wire, the interface an Object must provide to the Scheme allows
-// serializers to set the kind, version, and group the object is represented as. An Object may choose
-// to return a no-op ObjectKindAccessor in cases where it is not expected to be serialized.
-type Object interface {
-	GetObjectKind() schema.ObjectKind
-	DeepCopyObject() Object
 }

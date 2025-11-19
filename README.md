@@ -32,18 +32,54 @@ go build
 
 ## Usage
 
+The tool supports two modes: **config file mode** (recommended for multiple types) and **CLI mode** (for single type extraction).
+
+### Config File Mode (Recommended)
+
+Create a YAML config file (e.g., `rewriter.yaml`):
+
+```yaml
+output: ./generated
+packages:
+  - package: github.com/external-secrets/external-secrets/apis/externalsecrets/v1beta1
+    types:
+      - GithubProvider
+      - SecretStoreSpec
+  - package: github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1
+    types:
+      - Application
+      - ApplicationSpec
+```
+
+Then run:
+
+```bash
+package-rewriter --config rewriter.yaml
+```
+
+This will extract all specified types from all packages in a single run, which is more efficient than running the tool multiple times.
+
+### CLI Mode (Single Type)
+
+For extracting a single type:
+
 ```bash
 package-rewriter --package <package-path> --type <type-name> [--output <output-dir>]
 ```
 
 ### Options
 
+**Config file mode:**
+- `--config`: Path to YAML config file (required)
+- `-v`: Log level: `debug`, `info`, `warn`, `error` (default: `info`)
+
+**CLI mode:**
 - `--package`: Package path to extract from (required)
 - `--type`: Type name to extract (required)
 - `--output`: Output directory for generated code (default: `./generated`)
 - `-v`: Log level: `debug`, `info`, `warn`, `error` (default: `info`)
 
-### Example
+### Example: CLI Mode
 
 Extract the `Application` type from ArgoCD:
 
@@ -52,6 +88,14 @@ package-rewriter \
   --package github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1 \
   --type Application \
   --output ./generated
+```
+
+### Example: Config File Mode
+
+Create a `rewriter.yaml` file and extract multiple types:
+
+```bash
+package-rewriter --config rewriter.yaml
 ```
 
 This will:
@@ -158,7 +202,7 @@ Go will automatically use your generated lightweight versions instead of the ful
 
 ## Future Enhancements
 
-- [ ] Support for extracting multiple types in one run
+- [x] Support for extracting multiple types in one run (via config file)
 - [ ] Option to include constants and enums
 - [x] Automatic `go.mod` replace directive generation
 - [ ] Support for extracting entire package hierarchies

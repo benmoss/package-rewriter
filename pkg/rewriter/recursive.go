@@ -50,12 +50,12 @@ type ModuleInfo struct {
 // PackageInfo holds information about a package being processed
 type PackageInfo struct {
 	Pkg           *packages.Package
-	Decls         map[string]*DeclInfo // key: type name
-	Imports       map[string]string    // key: package path, value: package name (imports actually used in generated code)
-	SourceImports map[string][]string  // key: package path, value: all package names/aliases used across source files
-	NameToPath    map[string]string    // key: package name/alias, value: package path (reverse lookup)
-	OutputSubdir  string               // subdirectory in output (e.g., "k8s.io/apimachinery/pkg/apis/meta/v1")
-	ModulePath    string               // module this package belongs to
+	Decls         map[string]*DeclInfo       // key: type name
+	Imports       map[string]map[string]bool // key: package path, value: set of aliases actually used in generated code
+	SourceImports map[string][]string        // key: package path, value: all package names/aliases used across source files
+	NameToPath    map[string]string          // key: package name/alias, value: package path (reverse lookup)
+	OutputSubdir  string                     // subdirectory in output (e.g., "k8s.io/apimachinery/pkg/apis/meta/v1")
+	ModulePath    string                     // module this package belongs to
 }
 
 // TypeRef represents a reference to a type we need to extract
@@ -69,8 +69,24 @@ func (tr TypeRef) String() string {
 }
 
 func RewriteRecursive(config *Config) error {
+	return RewriteRecursiveBatch([]*Config{config})
+}
+
+// RewriteRecursiveBatch processes multiple type extractions in a batch
+// This is more efficient than calling RewriteRecursive multiple times
+// as it reuses the same rewriter state and only updates go.mod once
+func RewriteRecursiveBatch(configs []*Config) error {
+	if len(configs) == 0 {
+		return fmt.Errorf("no configs provided")
+	}
+
+	// Use the output directory from the first config
+	outputDir := configs[0].OutputDir
+
 	r := &RecursiveRewriter{
-		config:         config,
+		config: &Config{
+			OutputDir: outputDir,
+		},
 		fset:           token.NewFileSet(),
 		packages:       make(map[string]*PackageInfo),
 		processedTypes: make(map[string]bool),
@@ -78,11 +94,13 @@ func RewriteRecursive(config *Config) error {
 		modules:        make(map[string]*ModuleInfo),
 	}
 
-	// Start with the target type
-	r.pendingTypes = append(r.pendingTypes, TypeRef{
-		PackagePath: config.PackagePath,
-		TypeName:    config.TypeName,
-	})
+	// Queue all target types from all configs
+	for _, cfg := range configs {
+		r.pendingTypes = append(r.pendingTypes, TypeRef{
+			PackagePath: cfg.PackagePath,
+			TypeName:    cfg.TypeName,
+		})
+	}
 
 	// Find and load go.mod
 	goModPath, err := FindGoMod()
@@ -260,7 +278,7 @@ func (r *RecursiveRewriter) loadPackageInfo(pkgPath string) (*PackageInfo, error
 	pkgInfo := &PackageInfo{
 		Pkg:           pkg,
 		Decls:         make(map[string]*DeclInfo),
-		Imports:       make(map[string]string),
+		Imports:       make(map[string]map[string]bool),
 		SourceImports: make(map[string][]string),
 		NameToPath:    make(map[string]string),
 		OutputSubdir:  pkgPath,
@@ -420,12 +438,21 @@ func (r *RecursiveRewriter) walkTypeForDeps(pkgInfo *PackageInfo, expr ast.Expr)
 			pkgName := ident.Name
 			var externalPkgPath string
 
-			// Use NameToPath for direct reverse lookup
-			if path, exists := pkgInfo.NameToPath[pkgName]; exists {
-				externalPkgPath = path
+			// First, use TypesInfo to look up what the selector expression actually refers to
+			// This is the most reliable method as it uses the type checker's resolution
+			if pkgInfo.Pkg.TypesInfo != nil && pkgInfo.Pkg.TypesInfo.Uses != nil {
+				if obj := pkgInfo.Pkg.TypesInfo.Uses[ident]; obj != nil {
+					if pkgNameObj, ok := obj.(*types.PkgName); ok {
+						externalPkgPath = pkgNameObj.Imported().Path()
+						slog.Debug("Resolved package via TypesInfo",
+							"pkgAlias", pkgName,
+							"resolvedPath", externalPkgPath,
+							"typeName", t.Sel.Name)
+					}
+				}
 			}
 
-			// If not found, check all imported packages from the loader
+			// If not found via TypesInfo, check all imported packages from the loader
 			if externalPkgPath == "" {
 				for path, imp := range pkgInfo.Pkg.Imports {
 					if imp.Name == pkgName {
@@ -435,11 +462,23 @@ func (r *RecursiveRewriter) walkTypeForDeps(pkgInfo *PackageInfo, expr ast.Expr)
 				}
 			}
 
+			// If still not found, use NameToPath as a fallback
+			if externalPkgPath == "" {
+				if path, exists := pkgInfo.NameToPath[pkgName]; exists {
+					externalPkgPath = path
+				}
+			}
+
 			// If still not found, check our Imports map (already used imports)
 			if externalPkgPath == "" {
-				for path, name := range pkgInfo.Imports {
-					if name == pkgName {
-						externalPkgPath = path
+				for path, aliases := range pkgInfo.Imports {
+					for alias := range aliases {
+						if alias == pkgName {
+							externalPkgPath = path
+							break
+						}
+					}
+					if externalPkgPath != "" {
 						break
 					}
 				}
@@ -451,7 +490,10 @@ func (r *RecursiveRewriter) walkTypeForDeps(pkgInfo *PackageInfo, expr ast.Expr)
 				r.queueType(externalPkgPath, typeName)
 
 				// Record the import for this package with the correct alias
-				pkgInfo.Imports[externalPkgPath] = pkgName
+				if pkgInfo.Imports[externalPkgPath] == nil {
+					pkgInfo.Imports[externalPkgPath] = make(map[string]bool)
+				}
+				pkgInfo.Imports[externalPkgPath][pkgName] = true
 			}
 		}
 
@@ -536,26 +578,30 @@ func (r *RecursiveRewriter) generateOutput() error {
 		packageComment := fmt.Sprintf("// Code generated by package-rewriter. DO NOT EDIT.\n// Source: %s\n", pkgPath)
 
 		// Add imports (only used imports from this package's perspective)
+		// pkgInfo.Imports now maps path -> set of aliases used
 		if len(pkgInfo.Imports) > 0 {
 			importDecl := &ast.GenDecl{
 				Tok: token.IMPORT,
 			}
-			for path, name := range pkgInfo.Imports {
+			for path, aliases := range pkgInfo.Imports {
 				// Only add import if we actually generated that package
 				if _, exists := r.packages[path]; !exists && !r.isStdlib(path) {
 					continue // Skip imports to packages we didn't extract
 				}
 
-				importSpec := &ast.ImportSpec{
-					Path: &ast.BasicLit{
-						Kind:  token.STRING,
-						Value: fmt.Sprintf(`"%s"`, path),
-					},
+				// Add an import for each unique alias for this path
+				for alias := range aliases {
+					importSpec := &ast.ImportSpec{
+						Path: &ast.BasicLit{
+							Kind:  token.STRING,
+							Value: fmt.Sprintf(`"%s"`, path),
+						},
+					}
+					if alias != filepath.Base(path) && !strings.HasSuffix(path, "/"+alias) {
+						importSpec.Name = ast.NewIdent(alias)
+					}
+					importDecl.Specs = append(importDecl.Specs, importSpec)
 				}
-				if name != filepath.Base(path) && !strings.HasSuffix(path, "/"+name) {
-					importSpec.Name = ast.NewIdent(name)
-				}
-				importDecl.Specs = append(importDecl.Specs, importSpec)
 			}
 			if len(importDecl.Specs) > 0 {
 				newFile.Decls = append(newFile.Decls, importDecl)

@@ -2,6 +2,14 @@
 // Source: k8s.io/apimachinery/pkg/runtime/schema
 package schema
 
+// GroupVersionKind unambiguously identifies a kind.  It doesn't anonymously include GroupVersion
+// to avoid automatic coercion.  It doesn't use a GroupVersion to avoid custom marshalling
+type GroupVersionKind struct {
+	Group   string
+	Version string
+	Kind    string
+}
+
 // All objects that are serialized from a Scheme encode their type information. This interface is used
 // by serialization to set type information from the Scheme onto the serialized version of an object.
 // For objects that cannot be serialized or have unique requirements, this interface may be a no-op.
@@ -12,12 +20,4 @@ type ObjectKind interface {
 	// GroupVersionKind returns the stored group, version, and kind of an object, or an empty struct
 	// if the object does not expose or provide these fields.
 	GroupVersionKind() GroupVersionKind
-}
-
-// GroupVersionKind unambiguously identifies a kind.  It doesn't anonymously include GroupVersion
-// to avoid automatic coercion.  It doesn't use a GroupVersion to avoid custom marshalling
-type GroupVersionKind struct {
-	Group   string
-	Version string
-	Kind    string
 }
