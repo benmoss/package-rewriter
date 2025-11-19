@@ -37,7 +37,6 @@ type RecursiveRewriter struct {
 	packages       map[string]*PackageInfo // key: package path
 	pendingTypes   []TypeRef               // types we need to extract
 	processedTypes map[string]bool         // types we've already extracted
-	stdlib         map[string]bool         // stdlib packages to skip
 	modules        map[string]*ModuleInfo  // key: module path
 }
 
@@ -90,7 +89,6 @@ func RewriteRecursiveBatch(configs []*Config) error {
 		fset:           token.NewFileSet(),
 		packages:       make(map[string]*PackageInfo),
 		processedTypes: make(map[string]bool),
-		stdlib:         makeStdlibMap(),
 		modules:        make(map[string]*ModuleInfo),
 	}
 
@@ -736,20 +734,4 @@ func getModulePath(pkg *packages.Package) string {
 	// Fallback: try to infer from package path
 	// This is a heuristic and may not work for all cases
 	return pkg.PkgPath
-}
-
-func makeStdlibMap() map[string]bool {
-	// Common stdlib packages
-	return map[string]bool{
-		"fmt":     true,
-		"strings": true,
-		"time":    true,
-		"errors":  true,
-		"io":      true,
-		"os":      true,
-		"path":    true,
-		"sort":    true,
-		"sync":    true,
-		// Add more as needed
-	}
 }
