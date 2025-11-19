@@ -2,9 +2,8 @@
 // Source: github.com/argoproj/gitops-engine/pkg/sync/common
 package common
 
-type ResultCode string
-
 type HookType string
-type SyncPhase string
-
 type OperationPhase string
+
+type ResultCode string
+type SyncPhase string

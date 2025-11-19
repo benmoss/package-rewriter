@@ -8,36 +8,255 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// YandexLockboxCAProvider defines CA certificate configuration for Yandex Lockbox.
-type YandexLockboxCAProvider struct {
-	Certificate esmeta.SecretKeySelector `json:"certSecretRef,omitempty"`
+// AWSAuth tells the controller how to do authentication with aws.
+// Only one of secretRef or jwt can be specified.
+// if none is specified the controller will load credentials using the aws sdk defaults.
+type AWSAuth struct {
+	// +optional
+	SecretRef *AWSAuthSecretRef `json:"secretRef,omitempty"`
+	// +optional
+	JWTAuth *AWSJWTAuth `json:"jwt,omitempty"`
 }
 
-// VaultKubernetesServiceAccountTokenAuth authenticates with Vault using a temporary
-// Kubernetes service account token retrieved by the `TokenRequest` API.
-type VaultKubernetesServiceAccountTokenAuth struct {
-	// Service account field containing the name of a kubernetes ServiceAccount.
-	ServiceAccountRef esmeta.ServiceAccountSelector `json:"serviceAccountRef"`
+// AWSAuthSecretRef holds secret references for AWS credentials
+// both AccessKeyID and SecretAccessKey must be defined in order to properly authenticate.
+type AWSAuthSecretRef struct {
+	// The AccessKeyID is used for authentication
+	AccessKeyID esmeta.SecretKeySelector `json:"accessKeyIDSecretRef,omitempty"`
 
-	// Optional audiences field that will be used to request a temporary Kubernetes service
-	// account token for the service account referenced by `serviceAccountRef`.
-	// Defaults to a single audience `vault` it not specified.
-	// Deprecated: use serviceAccountRef.Audiences instead
-	// +optional
-	Audiences *[]string `json:"audiences,omitempty"`
+	// The SecretAccessKey is used for authentication
+	SecretAccessKey esmeta.SecretKeySelector `json:"secretAccessKeySecretRef,omitempty"`
 
-	// Optional expiration time in seconds that will be used to request a temporary
-	// Kubernetes service account token for the service account referenced by
-	// `serviceAccountRef`.
-	// Deprecated: this will be removed in the future.
-	// Defaults to 10 minutes.
-	// +optional
-	ExpirationSeconds *int64 `json:"expirationSeconds,omitempty"`
+	// The SessionToken used for authentication
+	// This must be defined if AccessKeyID and SecretAccessKey are temporary credentials
+	// see: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_temp_use-resources.html
+	// +Optional
+	SessionToken *esmeta.SecretKeySelector `json:"sessionTokenSecretRef,omitempty"`
 }
-// VaultAwsJWTAuth Authenticate against AWS using service account tokens.
-type VaultAwsJWTAuth struct {
+
+// AWSJWTAuth authenticates against AWS using service account tokens from the Kubernetes cluster.
+type AWSJWTAuth struct {
+	ServiceAccountRef *esmeta.ServiceAccountSelector `json:"serviceAccountRef,omitempty"`
+}
+
+// AWSProvider configures a store to sync secrets with AWS.
+type AWSProvider struct {
+	// Service defines which service should be used to fetch the secrets
+	Service AWSServiceType `json:"service"`
+
+	// Auth defines the information necessary to authenticate against AWS
+	// if not set aws sdk will infer credentials from your environment
+	// see: https://docs.aws.amazon.com/sdk-for-go/v1/developer-guide/configuring-sdk.html#specifying-credentials
+	// +optional
+	Auth AWSAuth `json:"auth,omitempty"`
+
+	// Role is a Role ARN which the provider will assume
+	// +optional
+	Role string `json:"role,omitempty"`
+
+	// AWS Region to be used for the provider
+	Region string `json:"region"`
+
+	// AdditionalRoles is a chained list of Role ARNs which the provider will sequentially assume before assuming the Role
+	// +optional
+	AdditionalRoles []string `json:"additionalRoles,omitempty"`
+
+	// AWS External ID set on assumed IAM roles
+	ExternalID string `json:"externalID,omitempty"`
+
+	// AWS STS assume role session tags
+	// +optional
+	SessionTags []*Tag `json:"sessionTags,omitempty"`
+
+	// SecretsManager defines how the provider behaves when interacting with AWS SecretsManager
+	// +optional
+	SecretsManager *SecretsManager `json:"secretsManager,omitempty"`
+
+	// AWS STS assume role transitive session tags. Required when multiple rules are used with the provider
+	// +optional
+	TransitiveTagKeys []*string `json:"transitiveTagKeys,omitempty"`
+
+	// Prefix adds a prefix to all retrieved values.
+	// +optional
+	Prefix string `json:"prefix,omitempty"`
+}
+// AWSServiceType is an enum that defines the service/API that is used to fetch the secrets.
+// +kubebuilder:validation:Enum=SecretsManager;ParameterStore
+type AWSServiceType string
+
+// AkeylessAuth defines methods of authentication with Akeyless Vault.
+type AkeylessAuth struct {
+
+	// Reference to a Secret that contains the details
+	// to authenticate with Akeyless.
+	// +optional
+	SecretRef AkeylessAuthSecretRef `json:"secretRef,omitempty"`
+
+	// Kubernetes authenticates with Akeyless by passing the ServiceAccount
+	// token stored in the named Secret resource.
+	// +optional
+	KubernetesAuth *AkeylessKubernetesAuth `json:"kubernetesAuth,omitempty"`
+}
+
+// AkeylessAuthSecretRef defines how to authenticate using a secret reference.
+// AKEYLESS_ACCESS_TYPE_PARAM: AZURE_OBJ_ID OR GCP_AUDIENCE OR ACCESS_KEY OR KUB_CONFIG_NAME.
+type AkeylessAuthSecretRef struct {
+	// The SecretAccessID is used for authentication
+	AccessID        esmeta.SecretKeySelector `json:"accessID,omitempty"`
+	AccessType      esmeta.SecretKeySelector `json:"accessType,omitempty"`
+	AccessTypeParam esmeta.SecretKeySelector `json:"accessTypeParam,omitempty"`
+}
+
+// AkeylessKubernetesAuth authenticates with Akeyless using a Kubernetes ServiceAccount token.
+type AkeylessKubernetesAuth struct {
+
+	// the Akeyless Kubernetes auth-method access-id
+	AccessID string `json:"accessID"`
+
+	// Kubernetes-auth configuration name in Akeyless-Gateway
+	K8sConfName string `json:"k8sConfName"`
+
+	// Optional service account field containing the name of a kubernetes ServiceAccount.
+	// If the service account is specified, the service account secret token JWT will be used
+	// for authenticating with Akeyless. If the service account selector is not supplied,
+	// the secretRef will be used instead.
 	// +optional
 	ServiceAccountRef *esmeta.ServiceAccountSelector `json:"serviceAccountRef,omitempty"`
+
+	// Optional secret field containing a Kubernetes ServiceAccount JWT used
+	// for authenticating with Akeyless. If a name is specified without a key,
+	// `token` is the default. If one is not specified, the one bound to
+	// the controller will be used.
+	// +optional
+	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
+}
+// AkeylessProvider Configures an store to sync secrets using Akeyless KV.
+type AkeylessProvider struct {
+
+	// Akeyless GW API Url from which the secrets to be fetched from.
+	AkeylessGWApiURL *string `json:"akeylessGWApiURL"`
+
+	// Auth configures how the operator authenticates with Akeyless.
+	Auth *AkeylessAuth `json:"authSecretRef"`
+
+	// PEM/base64 encoded CA bundle used to validate Akeyless Gateway certificate. Only used
+	// if the AkeylessGWApiURL URL is using HTTPS protocol. If not set the system root certificates
+	// are used to validate the TLS connection.
+	// +optional
+	CABundle []byte `json:"caBundle,omitempty"`
+
+	// The provider for the CA bundle to use to validate Akeyless Gateway certificate.
+	// +optional
+	CAProvider *CAProvider `json:"caProvider,omitempty"`
+}
+
+// AlibabaAuth contains a secretRef for credentials.
+type AlibabaAuth struct {
+	// +optional
+	SecretRef *AlibabaAuthSecretRef `json:"secretRef,omitempty"`
+	// +optional
+	RRSAAuth *AlibabaRRSAAuth `json:"rrsa,omitempty"`
+}
+
+// AlibabaAuthSecretRef holds secret references for Alibaba credentials.
+type AlibabaAuthSecretRef struct {
+	// The AccessKeyID is used for authentication
+	AccessKeyID esmeta.SecretKeySelector `json:"accessKeyIDSecretRef"`
+	// The AccessKeySecret is used for authentication
+	AccessKeySecret esmeta.SecretKeySelector `json:"accessKeySecretSecretRef"`
+}
+
+// AlibabaProvider configures a store to sync secrets using the Alibaba Secret Manager provider.
+type AlibabaProvider struct {
+	Auth AlibabaAuth `json:"auth"`
+	// Alibaba Region to be used for the provider
+	RegionID string `json:"regionID"`
+}
+// AlibabaRRSAAuth authenticates against Alibaba using RRSA (Resource-oriented RAM-based Service Authentication).
+type AlibabaRRSAAuth struct {
+	OIDCProviderARN   string `json:"oidcProviderArn"`
+	OIDCTokenFilePath string `json:"oidcTokenFilePath"`
+	RoleARN           string `json:"roleArn"`
+	SessionName       string `json:"sessionName"`
+}
+
+// AuthorizationProtocol contains the protocol-specific configuration
+// +kubebuilder:validation:MinProperties=1
+// +kubebuilder:validation:MaxProperties=1
+type AuthorizationProtocol struct {
+	// NTLMProtocol configures the store to use NTLM for auth
+	// +optional
+	NTLM *NTLMProtocol `json:"ntlm"`
+}
+
+// AzureAuthType describes how to authenticate to the Azure Keyvault.
+// Only one of the following auth types may be specified.
+// If none of the following auth type is specified, the default one
+// is ServicePrincipal.
+// +kubebuilder:validation:Enum=ServicePrincipal;ManagedIdentity;WorkloadIdentity
+type AzureAuthType string
+
+// AzureEnvironmentType specifies the Azure cloud environment endpoints to use for
+// connecting and authenticating with Azure. By default it points to the public cloud AAD endpoint.
+// The following endpoints are available, also see here: https://github.com/Azure/go-autorest/blob/main/autorest/azure/environments.go#L152
+// PublicCloud, USGovernmentCloud, ChinaCloud, GermanCloud
+// +kubebuilder:validation:Enum=PublicCloud;USGovernmentCloud;ChinaCloud;GermanCloud
+type AzureEnvironmentType string
+
+// AzureKVAuth defines configuration for authentication with Azure Key Vault.
+type AzureKVAuth struct {
+	// The Azure clientId of the service principle or managed identity used for authentication.
+	// +optional
+	ClientID *smmeta.SecretKeySelector `json:"clientId,omitempty"`
+
+	// The Azure tenantId of the managed identity used for authentication.
+	// +optional
+	TenantID *smmeta.SecretKeySelector `json:"tenantId,omitempty"`
+
+	// The Azure ClientSecret of the service principle used for authentication.
+	// +optional
+	ClientSecret *smmeta.SecretKeySelector `json:"clientSecret,omitempty"`
+
+	// The Azure ClientCertificate of the service principle used for authentication.
+	// +optional
+	ClientCertificate *smmeta.SecretKeySelector `json:"clientCertificate,omitempty"`
+}
+// AzureKVProvider configures a store to sync secrets using Azure Key Vault.
+type AzureKVProvider struct {
+	// Auth type defines how to authenticate to the keyvault service.
+	// Valid values are:
+	// - "ServicePrincipal" (default): Using a service principal (tenantId, clientId, clientSecret)
+	// - "ManagedIdentity": Using Managed Identity assigned to the pod (see aad-pod-identity)
+	// +optional
+	// +kubebuilder:default=ServicePrincipal
+	AuthType *AzureAuthType `json:"authType,omitempty"`
+
+	// Vault Url from which the secrets to be fetched from.
+	VaultURL *string `json:"vaultUrl"`
+
+	// TenantID configures the Azure Tenant to send requests to. Required for ServicePrincipal auth type. Optional for WorkloadIdentity.
+	// +optional
+	TenantID *string `json:"tenantId,omitempty"`
+
+	// EnvironmentType specifies the Azure cloud environment endpoints to use for
+	// connecting and authenticating with Azure. By default it points to the public cloud AAD endpoint.
+	// The following endpoints are available, also see here: https://github.com/Azure/go-autorest/blob/main/autorest/azure/environments.go#L152
+	// PublicCloud, USGovernmentCloud, ChinaCloud, GermanCloud
+	// +kubebuilder:default=PublicCloud
+	EnvironmentType AzureEnvironmentType `json:"environmentType,omitempty"`
+
+	// Auth configures how the operator authenticates with Azure. Required for ServicePrincipal auth type. Optional for WorkloadIdentity.
+	// +optional
+	AuthSecretRef *AzureKVAuth `json:"authSecretRef,omitempty"`
+
+	// ServiceAccountRef specified the service account
+	// that should be used when authenticating with WorkloadIdentity.
+	// +optional
+	ServiceAccountRef *smmeta.ServiceAccountSelector `json:"serviceAccountRef,omitempty"`
+
+	// If multiple Managed Identity is assigned to the pod, you can select the one to be used
+	// +optional
+	IdentityID *string `json:"identityId,omitempty"`
 }
 
 // BeyondTrustProviderSecretRef defines a reference to a secret containing credentials for the BeyondTrust provider.
@@ -52,71 +271,75 @@ type BeyondTrustProviderSecretRef struct {
 	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
 }
 
-// AzureEnvironmentType specifies the Azure cloud environment endpoints to use for
-// connecting and authenticating with Azure. By default it points to the public cloud AAD endpoint.
-// The following endpoints are available, also see here: https://github.com/Azure/go-autorest/blob/main/autorest/azure/environments.go#L152
-// PublicCloud, USGovernmentCloud, ChinaCloud, GermanCloud
-// +kubebuilder:validation:Enum=PublicCloud;USGovernmentCloud;ChinaCloud;GermanCloud
-type AzureEnvironmentType string
-
-// PassboltAuth contains credentials and configuration for authenticating with the Passbolt server.
-type PassboltAuth struct {
-	// PasswordSecretRef is a reference to the secret containing the Passbolt password
-	PasswordSecretRef *esmeta.SecretKeySelector `json:"passwordSecretRef"`
-	// PrivateKeySecretRef is a reference to the secret containing the Passbolt private key
-	PrivateKeySecretRef *esmeta.SecretKeySelector `json:"privateKeySecretRef"`
+// BeyondtrustAuth configures authentication for BeyondTrust Password Safe.
+type BeyondtrustAuth struct {
+	// APIKey If not provided then ClientID/ClientSecret become required.
+	APIKey *BeyondTrustProviderSecretRef `json:"apiKey,omitempty"`
+	// ClientID is the API OAuth Client ID.
+	ClientID *BeyondTrustProviderSecretRef `json:"clientId,omitempty"`
+	// ClientSecret is the API OAuth Client Secret.
+	ClientSecret *BeyondTrustProviderSecretRef `json:"clientSecret,omitempty"`
+	// Certificate (cert.pem) for use when authenticating with an OAuth client Id using a Client Certificate.
+	Certificate *BeyondTrustProviderSecretRef `json:"certificate,omitempty"`
+	// Certificate private key (key.pem). For use when authenticating with an OAuth client Id
+	CertificateKey *BeyondTrustProviderSecretRef `json:"certificateKey,omitempty"`
 }
 
-// IBMAuthContainerAuth defines authentication using IBM Container-based auth with IAM Trusted Profile.
-type IBMAuthContainerAuth struct {
-	// the IBM Trusted Profile
-	Profile string `json:"profile"`
+// BeyondtrustProvider defines configuration for the BeyondTrust Password Safe provider.
+type BeyondtrustProvider struct {
 
-	// Location the token is mounted on the pod
-	TokenLocation string `json:"tokenLocation,omitempty"`
+	// Auth configures how the operator authenticates with Beyondtrust.
+	Auth *BeyondtrustAuth `json:"auth"`
 
-	IAMEndpoint string `json:"iamEndpoint,omitempty"`
+	// Auth configures how API server works.
+	Server *BeyondtrustServer `json:"server"`
+}
+// BeyondtrustServer defines configuration for connecting to BeyondTrust Password Safe server.
+type BeyondtrustServer struct {
+	// +required - BeyondTrust Password Safe API URL. https://example.com:443/beyondtrust/api/public/V3.
+	APIURL string `json:"apiUrl"`
+	// +optional - The recommended version is 3.1. If no version is specified, the default API version 3.0 will be used
+	APIVersion string `json:"apiVersion,omitempty"`
+	// The secret retrieval type. SECRET = Secrets Safe (credential, text, file). MANAGED_ACCOUNT = Password Safe account associated with a system.
+	RetrievalType string `json:"retrievalType,omitempty"`
+	// A character that separates the folder names.
+	Separator string `json:"separator,omitempty"`
+	// +required - Indicates whether to verify the certificate authority on the Secrets Safe instance. Warning - false is insecure, instructs the BT provider not to verify the certificate authority.
+	VerifyCA bool `json:"verifyCA"`
+	// Timeout specifies a time limit for requests made by this Client. The timeout includes connection time, any redirects, and reading the response body. Defaults to 45 seconds.
+	ClientTimeOutSeconds int `json:"clientTimeOutSeconds,omitempty"`
 }
 
-// PreviderAuthSecretRef holds secret references for Previder Vault credentials.
-type PreviderAuthSecretRef struct {
-	// The AccessToken is used for authentication
-	AccessToken esmeta.SecretKeySelector `json:"accessToken"`
+// BitwardenSecretsManagerAuth contains the ref to the secret that contains the machine account token.
+type BitwardenSecretsManagerAuth struct {
+	SecretRef BitwardenSecretsManagerSecretRef `json:"secretRef"`
 }
-
-// PassboltProvider defines configuration for the Passbolt provider.
-type PassboltProvider struct {
-	// Auth defines the information necessary to authenticate against Passbolt Server
-	Auth *PassboltAuth `json:"auth"`
-	// Host defines the Passbolt Server to connect to
-	Host string `json:"host"`
-}
-
-// GCPSMAuth defines the authentication methods for the GCP Secret Manager provider.
-type GCPSMAuth struct {
+// BitwardenSecretsManagerProvider configures a store to sync secrets with a Bitwarden Secrets Manager instance.
+type BitwardenSecretsManagerProvider struct {
+	APIURL                string `json:"apiURL,omitempty"`
+	IdentityURL           string `json:"identityURL,omitempty"`
+	BitwardenServerSDKURL string `json:"bitwardenServerSDKURL,omitempty"`
+	// Base64 encoded certificate for the bitwarden server sdk. The sdk MUST run with HTTPS to make sure no MITM attack
+	// can be performed.
 	// +optional
-	SecretRef *GCPSMAuthSecretRef `json:"secretRef,omitempty"`
+	CABundle string `json:"caBundle,omitempty"`
+	// see: https://external-secrets.io/latest/spec/#external-secrets.io/v1alpha1.CAProvider
 	// +optional
-	WorkloadIdentity *GCPWorkloadIdentity `json:"workloadIdentity,omitempty"`
+	CAProvider *CAProvider `json:"caProvider,omitempty"`
+	// OrganizationID determines which organization this secret store manages.
+	OrganizationID string `json:"organizationID"`
+	// ProjectID determines which project this secret store manages.
+	ProjectID string `json:"projectID"`
+	// Auth configures how secret-manager authenticates with a bitwarden machine account instance.
+	// Make sure that the token being used has permissions on the given secret.
+	Auth BitwardenSecretsManagerAuth `json:"auth"`
 }
 
-// ConjurAuth defines the methods of authentication with Conjur.
-type ConjurAuth struct {
-	// Authenticates with Conjur using an API key.
-	// +optional
-	APIKey *ConjurAPIKey `json:"apikey,omitempty"`
-
-	// Jwt enables JWT authentication using Kubernetes service account tokens.
-	// +optional
-	Jwt *ConjurJWT `json:"jwt,omitempty"`
-}
-
-// AlibabaAuthSecretRef holds secret references for Alibaba credentials.
-type AlibabaAuthSecretRef struct {
-	// The AccessKeyID is used for authentication
-	AccessKeyID esmeta.SecretKeySelector `json:"accessKeyIDSecretRef"`
-	// The AccessKeySecret is used for authentication
-	AccessKeySecret esmeta.SecretKeySelector `json:"accessKeySecretSecretRef"`
+// BitwardenSecretsManagerSecretRef contains the credential ref to the bitwarden instance.
+type BitwardenSecretsManagerSecretRef struct {
+	// AccessToken used for the bitwarden instance.
+	// +required
+	Credentials esmeta.SecretKeySelector `json:"credentials"`
 }
 
 // CAProvider provides custom certificate authority (CA) certificates
@@ -148,62 +371,48 @@ type CAProvider struct {
 	// +kubebuilder:validation:Pattern:=^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
 	Namespace *string `json:"namespace,omitempty"`
 }
+// CAProviderType defines the type of provider to use for CA certificates.
+type CAProviderType string
 
-// IBMAuth defines the authentication methods for the IBM Cloud Secrets Manager provider.
-// +kubebuilder:validation:MinProperties=1
-// +kubebuilder:validation:MaxProperties=1
-type IBMAuth struct {
-	SecretRef     *IBMAuthSecretRef     `json:"secretRef,omitempty"`
-	ContainerAuth *IBMAuthContainerAuth `json:"containerAuth,omitempty"`
-}
-
-// VaultKubernetesAuth authenticates against Vault using a Kubernetes ServiceAccount token stored in a Secret.
-type VaultKubernetesAuth struct {
-	// Path where the Kubernetes authentication backend is mounted in Vault, e.g:
-	// "kubernetes"
-	// +kubebuilder:default=kubernetes
-	Path string `json:"mountPath"`
-
-	// Optional service account field containing the name of a kubernetes ServiceAccount.
-	// If the service account is specified, the service account secret token JWT will be used
-	// for authenticating with Vault. If the service account selector is not supplied,
-	// the secretRef will be used instead.
+// CSMAuth contains a secretRef for credentials.
+type CSMAuth struct {
 	// +optional
-	ServiceAccountRef *esmeta.ServiceAccountSelector `json:"serviceAccountRef,omitempty"`
-
-	// Optional secret field containing a Kubernetes ServiceAccount JWT used
-	// for authenticating with Vault. If a name is specified without a key,
-	// `token` is the default. If one is not specified, the one bound to
-	// the controller will be used.
-	// +optional
-	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
-
-	// A required field containing the Vault Role to assume. A Role binds a
-	// Kubernetes ServiceAccount with a set of Vault policies.
-	Role string `json:"role"`
+	SecretRef *CSMAuthSecretRef `json:"secretRef,omitempty"`
 }
 
-// OracleSecretRef defines references to secrets containing Oracle credentials.
-type OracleSecretRef struct {
-	// PrivateKey is the user's API Signing Key in PEM format, used for authentication.
-	PrivateKey esmeta.SecretKeySelector `json:"privatekey"`
-
-	// Fingerprint is the fingerprint of the API private key.
-	Fingerprint esmeta.SecretKeySelector `json:"fingerprint"`
+// CSMAuthSecretRef holds secret references for Cloud.ru credentials.
+type CSMAuthSecretRef struct {
+	// The AccessKeyID is used for authentication
+	AccessKeyID esmeta.SecretKeySelector `json:"accessKeyIDSecretRef"`
+	// The AccessKeySecret is used for authentication
+	AccessKeySecret esmeta.SecretKeySelector `json:"accessKeySecretSecretRef"`
 }
 
-// OnePasswordAuthSecretRef holds secret references for 1Password credentials.
-type OnePasswordAuthSecretRef struct {
-	// The ConnectToken is used for authentication to a 1Password Connect Server.
-	ConnectToken esmeta.SecretKeySelector `json:"connectTokenSecretRef"`
+// CertAuth defines certificate-based authentication for the Kubernetes provider.
+type CertAuth struct {
+	ClientCert esmeta.SecretKeySelector `json:"clientCert,omitempty"`
+	ClientKey  esmeta.SecretKeySelector `json:"clientKey,omitempty"`
 }
 
-// DopplerAuthSecretRef defines a reference to a secret containing credentials for the Doppler provider.
-type DopplerAuthSecretRef struct {
-	// The DopplerToken is used for authentication.
-	// See https://docs.doppler.com/reference/api#authentication for auth token types.
-	// The Key attribute defaults to dopplerToken if not specified.
-	DopplerToken esmeta.SecretKeySelector `json:"dopplerToken"`
+// ChefAuth contains a secretRef for credentials.
+type ChefAuth struct {
+	SecretRef ChefAuthSecretRef `json:"secretRef"`
+}
+
+// ChefAuthSecretRef holds secret references for chef server login credentials.
+type ChefAuthSecretRef struct {
+	// SecretKey is the Signing Key in PEM format, used for authentication.
+	SecretKey esmeta.SecretKeySelector `json:"privateKeySecretRef"`
+}
+
+// ChefProvider configures a store to sync secrets using basic chef server connection credentials.
+type ChefProvider struct {
+	// Auth defines the information necessary to authenticate against chef Server
+	Auth *ChefAuth `json:"auth"`
+	// UserName should be the user ID on the chef server
+	UserName string `json:"username"`
+	// ServerURL is the chef server URL used to connect to. If using orgs you should include your org in the url and terminate the url with a "/"
+	ServerURL string `json:"serverUrl"`
 }
 
 // CloudruSMProvider configures a store to sync secrets using the Cloud.ru Secret Manager provider.
@@ -214,13 +423,224 @@ type CloudruSMProvider struct {
 	ProjectID string `json:"projectID,omitempty"`
 }
 
-// AuthorizationProtocol contains the protocol-specific configuration
-// +kubebuilder:validation:MinProperties=1
-// +kubebuilder:validation:MaxProperties=1
-type AuthorizationProtocol struct {
-	// NTLMProtocol configures the store to use NTLM for auth
+// ClusterSecretStoreCondition describes a condition by which to choose namespaces to process ExternalSecrets in
+// for a ClusterSecretStore instance.
+type ClusterSecretStoreCondition struct {
+	// Choose namespace using a labelSelector
 	// +optional
-	NTLM *NTLMProtocol `json:"ntlm"`
+	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
+
+	// Choose namespaces by name
+	// +optional
+	// +kubebuilder:validation:items:MinLength:=1
+	// +kubebuilder:validation:items:MaxLength:=63
+	// +kubebuilder:validation:items:Pattern:=^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+	Namespaces []string `json:"namespaces,omitempty"`
+
+	// Choose namespaces by using regex matching
+	// +optional
+	NamespaceRegexes []string `json:"namespaceRegexes,omitempty"`
+}
+
+// ConjurAPIKey defines authentication using a Conjur API key.
+type ConjurAPIKey struct {
+	// Account is the Conjur organization account name.
+	Account string `json:"account"`
+
+	// A reference to a specific 'key' containing the Conjur username
+	// within a Secret resource. In some instances, `key` is a required field.
+	UserRef *esmeta.SecretKeySelector `json:"userRef"`
+
+	// A reference to a specific 'key' containing the Conjur API key
+	// within a Secret resource. In some instances, `key` is a required field.
+	APIKeyRef *esmeta.SecretKeySelector `json:"apiKeyRef"`
+}
+// ConjurAuth defines the methods of authentication with Conjur.
+type ConjurAuth struct {
+	// Authenticates with Conjur using an API key.
+	// +optional
+	APIKey *ConjurAPIKey `json:"apikey,omitempty"`
+
+	// Jwt enables JWT authentication using Kubernetes service account tokens.
+	// +optional
+	Jwt *ConjurJWT `json:"jwt,omitempty"`
+}
+
+// ConjurJWT defines authentication using a JWT service account token.
+type ConjurJWT struct {
+	// Account is the Conjur organization account name.
+	Account string `json:"account"`
+
+	// The conjur authn jwt webservice id
+	ServiceID string `json:"serviceID"`
+
+	// Optional HostID for JWT authentication. This may be used depending
+	// on how the Conjur JWT authenticator policy is configured.
+	// +optional
+	HostID string `json:"hostId"`
+
+	// Optional SecretRef that refers to a key in a Secret resource containing JWT token to
+	// authenticate with Conjur using the JWT authentication method.
+	// +optional
+	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
+
+	// Optional ServiceAccountRef specifies the Kubernetes service account for which to request
+	// a token for with the `TokenRequest` API.
+	// +optional
+	ServiceAccountRef *esmeta.ServiceAccountSelector `json:"serviceAccountRef,omitempty"`
+}
+// ConjurProvider defines configuration for the CyberArk Conjur provider.
+type ConjurProvider struct {
+	// URL is the endpoint of the Conjur instance.
+	URL string `json:"url"`
+
+	// CABundle is a PEM encoded CA bundle that will be used to validate the Conjur server certificate.
+	// +optional
+	CABundle string `json:"caBundle,omitempty"`
+
+	// Used to provide custom certificate authority (CA) certificates
+	// for a secret store. The CAProvider points to a Secret or ConfigMap resource
+	// that contains a PEM-encoded certificate.
+	// +optional
+	CAProvider *CAProvider `json:"caProvider,omitempty"`
+
+	// Defines authentication settings for connecting to Conjur.
+	Auth ConjurAuth `json:"auth"`
+}
+
+// DelineaProvider defines configuration for the Delinea DevOps Secrets Vault provider.
+// See https://github.com/DelineaXPM/dsv-sdk-go/blob/main/vault/vault.go.
+type DelineaProvider struct {
+
+	// ClientID is the non-secret part of the credential.
+	ClientID *DelineaProviderSecretRef `json:"clientId"`
+
+	// ClientSecret is the secret part of the credential.
+	ClientSecret *DelineaProviderSecretRef `json:"clientSecret"`
+
+	// Tenant is the chosen hostname / site name.
+	Tenant string `json:"tenant"`
+
+	// URLTemplate
+	// If unset, defaults to "https://%s.secretsvaultcloud.%s/v1/%s%s".
+	// +optional
+	URLTemplate string `json:"urlTemplate,omitempty"`
+
+	// TLD is based on the server location that was chosen during provisioning.
+	// If unset, defaults to "com".
+	// +optional
+	TLD string `json:"tld,omitempty"`
+}
+// DelineaProviderSecretRef defines a reference to a secret containing credentials for the Delinea provider.
+type DelineaProviderSecretRef struct {
+
+	// Value can be specified directly to set a value without using a secret.
+	// +optional
+	Value string `json:"value,omitempty"`
+
+	// SecretRef references a key in a secret that will be used as value.
+	// +optional
+	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
+}
+
+// Device42Auth defines the authentication method for the Device42 provider.
+type Device42Auth struct {
+	SecretRef Device42SecretRef `json:"secretRef"`
+}
+// Device42Provider configures a store to sync secrets with a Device42 instance.
+type Device42Provider struct {
+	// URL configures the Device42 instance URL.
+	Host string `json:"host"`
+
+	// Auth configures how secret-manager authenticates with a Device42 instance.
+	Auth Device42Auth `json:"auth"`
+}
+
+// Device42SecretRef defines a reference to a secret containing credentials for the Device42 provider.
+type Device42SecretRef struct {
+	// Username / Password is used for authentication.
+	// +optional
+	Credentials esmeta.SecretKeySelector `json:"credentials,omitempty"`
+}
+
+// DopplerAuth defines the authentication method for the Doppler provider.
+type DopplerAuth struct {
+	SecretRef DopplerAuthSecretRef `json:"secretRef"`
+}
+
+// DopplerAuthSecretRef defines a reference to a secret containing credentials for the Doppler provider.
+type DopplerAuthSecretRef struct {
+	// The DopplerToken is used for authentication.
+	// See https://docs.doppler.com/reference/api#authentication for auth token types.
+	// The Key attribute defaults to dopplerToken if not specified.
+	DopplerToken esmeta.SecretKeySelector `json:"dopplerToken"`
+}
+
+// DopplerProvider configures a store to sync secrets using the Doppler provider.
+// Project and Config are required if not using a Service Token.
+type DopplerProvider struct {
+	// Auth configures how the Operator authenticates with the Doppler API
+	Auth *DopplerAuth `json:"auth"`
+
+	// Doppler project (required if not using a Service Token)
+	// +optional
+	Project string `json:"project,omitempty"`
+
+	// Doppler config (required if not using a Service Token)
+	// +optional
+	Config string `json:"config,omitempty"`
+
+	// Environment variable compatible name transforms that change secret names to a different format
+	// +kubebuilder:validation:Enum=upper-camel;camel;lower-snake;tf-var;dotnet-env;lower-kebab
+	// +optional
+	NameTransformer string `json:"nameTransformer,omitempty"`
+
+	// Format enables the downloading of secrets as a file (string)
+	// +kubebuilder:validation:Enum=json;dotnet-json;env;yaml;docker
+	// +optional
+	Format string `json:"format,omitempty"`
+}
+
+// FakeProvider configures a fake provider that returns static values.
+type FakeProvider struct {
+	Data []FakeProviderData `json:"data"`
+}
+
+// FakeProviderData defines a key-value pair for the fake provider used in testing.
+type FakeProviderData struct {
+	Key     string `json:"key"`
+	Value   string `json:"value"`
+	Version string `json:"version,omitempty"`
+}
+
+// FortanixProvider configures a store to sync secrets using the Fortanix SDKMS provider.
+type FortanixProvider struct {
+	// APIURL is the URL of SDKMS API. Defaults to `sdkms.fortanix.com`.
+	APIURL string `json:"apiUrl,omitempty"`
+
+	// APIKey is the API token to access SDKMS Applications.
+	APIKey *FortanixProviderSecretRef `json:"apiKey,omitempty"`
+}
+
+// FortanixProviderSecretRef defines a reference to a secret containing credentials for the Fortanix provider.
+type FortanixProviderSecretRef struct {
+	// SecretRef is a reference to a secret containing the SDKMS API Key.
+	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
+}
+
+// GCPSMAuth defines the authentication methods for the GCP Secret Manager provider.
+type GCPSMAuth struct {
+	// +optional
+	SecretRef *GCPSMAuthSecretRef `json:"secretRef,omitempty"`
+	// +optional
+	WorkloadIdentity *GCPWorkloadIdentity `json:"workloadIdentity,omitempty"`
+}
+
+// GCPSMAuthSecretRef defines a reference to a secret containing credentials for the GCP Secret Manager provider.
+type GCPSMAuthSecretRef struct {
+	// The SecretAccessKey is used for authentication
+	// +optional
+	SecretAccessKey esmeta.SecretKeySelector `json:"secretAccessKeySecretRef,omitempty"`
 }
 
 // GCPSMProvider Configures a store to sync secrets using the GCP Secret Manager provider.
@@ -235,23 +655,433 @@ type GCPSMProvider struct {
 	// Location optionally defines a location for a secret
 	Location string `json:"location,omitempty"`
 }
+// GCPWorkloadIdentity defines configuration for using GCP Workload Identity authentication.
+type GCPWorkloadIdentity struct {
+	// +kubebuilder:validation:Required
+	ServiceAccountRef esmeta.ServiceAccountSelector `json:"serviceAccountRef"`
+	// ClusterLocation is the location of the cluster
+	// If not specified, it fetches information from the metadata server
+	// +optional
+	ClusterLocation string `json:"clusterLocation,omitempty"`
+	// ClusterName is the name of the cluster
+	// If not specified, it fetches information from the metadata server
+	// +optional
+	ClusterName string `json:"clusterName,omitempty"`
+	// ClusterProjectID is the project ID of the cluster
+	// If not specified, it fetches information from the metadata server
+	// +optional
+	ClusterProjectID string `json:"clusterProjectID,omitempty"`
+}
 
-/*
-SenhaseguraProvider setup a store to sync secrets with senhasegura.
-*/
-type SenhaseguraProvider struct {
-	/* URL of senhasegura */
-	URL string `json:"url"`
+// GithubAppAuth defines the GitHub App authentication mechanism for the GitHub provider.
+type GithubAppAuth struct {
+	PrivateKey esmeta.SecretKeySelector `json:"privateKey"`
+}
+// GithubProvider configures a store to push secrets to Github Actions.
+type GithubProvider struct {
+	// URL configures the Github instance URL. Defaults to https://github.com/.
+	//+kubebuilder:default="https://github.com/"
+	URL string `json:"url,omitempty"`
+	// Upload URL for enterprise instances. Default to URL.
+	//+optional
+	UploadURL string `json:"uploadURL,omitempty"`
+	// auth configures how secret-manager authenticates with a Github instance.
+	Auth GithubAppAuth `json:"auth"`
 
-	/* Module defines which senhasegura module should be used to get secrets */
-	Module SenhaseguraModuleType `json:"module"`
+	// appID specifies the Github APP that will be used to authenticate the client
+	AppID int64 `json:"appID"`
 
-	/* Auth defines parameters to authenticate in senhasegura */
-	Auth SenhaseguraAuth `json:"auth"`
+	// installationID specifies the Github APP installation that will be used to authenticate the client
+	InstallationID int64 `json:"installationID"`
 
-	// IgnoreSslCertificate defines if SSL certificate must be ignored
+	// organization will be used to fetch secrets from the Github organization
+	Organization string `json:"organization"`
+
+	// repository will be used to fetch secrets from the Github repository within an organization
+	//+optional
+	Repository string `json:"repository,omitempty"`
+
+	// environment will be used to fetch secrets from a particular environment within a github repository
+	//+optional
+	Environment string `json:"environment,omitempty"`
+}
+
+// GitlabAuth defines the authentication method for the GitLab provider.
+type GitlabAuth struct {
+	SecretRef GitlabSecretRef `json:"SecretRef"`
+}
+// GitlabProvider configures a store to sync secrets with a GitLab instance.
+type GitlabProvider struct {
+	// URL configures the GitLab instance URL. Defaults to https://gitlab.com/.
+	URL string `json:"url,omitempty"`
+
+	// Auth configures how secret-manager authenticates with a GitLab instance.
+	Auth GitlabAuth `json:"auth"`
+
+	// ProjectID specifies a project where secrets are located.
+	ProjectID string `json:"projectID,omitempty"`
+
+	// InheritFromGroups specifies whether parent groups should be discovered and checked for secrets.
+	InheritFromGroups bool `json:"inheritFromGroups,omitempty"`
+
+	// GroupIDs specify, which gitlab groups to pull secrets from. Group secrets are read from left to right followed by the project variables.
+	GroupIDs []string `json:"groupIDs,omitempty"`
+
+	// Environment environment_scope of gitlab CI/CD variables (Please see https://docs.gitlab.com/ee/ci/environments/#create-a-static-environment on how to create environments)
+	Environment string `json:"environment,omitempty"`
+
+	// Base64 encoded certificate for the GitLab server sdk. The sdk MUST run with HTTPS to make sure no MITM attack
+	// can be performed.
+	// +optional
+	CABundle []byte `json:"caBundle,omitempty"`
+
+	// see: https://external-secrets.io/latest/spec/#external-secrets.io/v1alpha1.CAProvider
+	// +optional
+	CAProvider *CAProvider `json:"caProvider,omitempty"`
+}
+
+// GitlabSecretRef defines a reference to a secret containing credentials for the GitLab provider.
+type GitlabSecretRef struct {
+	// AccessToken is used for authentication.
+	AccessToken esmeta.SecretKeySelector `json:"accessToken,omitempty"`
+}
+
+// IBMAuth defines the authentication methods for the IBM Cloud Secrets Manager provider.
+// +kubebuilder:validation:MinProperties=1
+// +kubebuilder:validation:MaxProperties=1
+type IBMAuth struct {
+	SecretRef     *IBMAuthSecretRef     `json:"secretRef,omitempty"`
+	ContainerAuth *IBMAuthContainerAuth `json:"containerAuth,omitempty"`
+}
+
+// IBMAuthContainerAuth defines authentication using IBM Container-based auth with IAM Trusted Profile.
+type IBMAuthContainerAuth struct {
+	// the IBM Trusted Profile
+	Profile string `json:"profile"`
+
+	// Location the token is mounted on the pod
+	TokenLocation string `json:"tokenLocation,omitempty"`
+
+	IAMEndpoint string `json:"iamEndpoint,omitempty"`
+}
+// IBMAuthSecretRef defines a reference to a secret containing credentials for the IBM provider.
+type IBMAuthSecretRef struct {
+	// The SecretAccessKey is used for authentication
+	SecretAPIKey esmeta.SecretKeySelector `json:"secretApiKeySecretRef,omitempty"`
+}
+// IBMProvider configures a store to sync secrets using a IBM Cloud Secrets Manager backend.
+type IBMProvider struct {
+	// Auth configures how secret-manager authenticates with the IBM secrets manager.
+	Auth IBMAuth `json:"auth"`
+
+	// ServiceURL is the Endpoint URL that is specific to the Secrets Manager service instance
+	ServiceURL *string `json:"serviceUrl,omitempty"`
+}
+
+// InfisicalAuth defines the authentication methods for the Infisical provider.
+type InfisicalAuth struct {
+	// +optional
+	UniversalAuthCredentials *UniversalAuthCredentials `json:"universalAuthCredentials,omitempty"`
+}
+
+// InfisicalProvider configures a store to sync secrets using the Infisical provider.
+type InfisicalProvider struct {
+	// Auth configures how the Operator authenticates with the Infisical API
+	// +kubebuilder:validation:Required
+	Auth InfisicalAuth `json:"auth"`
+	// SecretsScope defines the scope of the secrets within the workspace
+	// +kubebuilder:validation:Required
+	SecretsScope MachineIdentityScopeInWorkspace `json:"secretsScope"`
+	// HostAPI specifies the base URL of the Infisical API. If not provided, it defaults to "https://app.infisical.com/api".
+	// +kubebuilder:default="https://app.infisical.com/api"
+	// +optional
+	HostAPI string `json:"hostAPI,omitempty"`
+}
+
+// KeeperSecurityProvider Configures a store to sync secrets using Keeper Security.
+type KeeperSecurityProvider struct {
+	Auth     smmeta.SecretKeySelector `json:"authRef"`
+	FolderID string                   `json:"folderID"`
+}
+
+// KubernetesAuth defines authentication methods for the Kubernetes provider.
+// +kubebuilder:validation:MinProperties=1
+// +kubebuilder:validation:MaxProperties=1
+type KubernetesAuth struct {
+	// has both clientCert and clientKey as secretKeySelector
+	// +optional
+	Cert *CertAuth `json:"cert,omitempty"`
+
+	// use static token to authenticate with
+	// +optional
+	Token *TokenAuth `json:"token,omitempty"`
+
+	// points to a service account that should be used for authentication
+	// +optional
+	ServiceAccount *esmeta.ServiceAccountSelector `json:"serviceAccount,omitempty"`
+}
+// KubernetesProvider configures a store to sync secrets with a Kubernetes instance.
+type KubernetesProvider struct {
+	// configures the Kubernetes server Address.
+	// +optional
+	Server KubernetesServer `json:"server,omitempty"`
+
+	// Auth configures how secret-manager authenticates with a Kubernetes instance.
+	// +optional
+	Auth KubernetesAuth `json:"auth"`
+
+	// A reference to a secret that contains the auth information.
+	// +optional
+	AuthRef *esmeta.SecretKeySelector `json:"authRef,omitempty"`
+
+	// Remote namespace to fetch the secrets from
+	// +optional
+	// +kubebuilder:default=default
+	// +kubebuilder:validation:MinLength:=1
+	// +kubebuilder:validation:MaxLength:=63
+	// +kubebuilder:validation:Pattern:=^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+	RemoteNamespace string `json:"remoteNamespace,omitempty"`
+}
+// KubernetesServer defines the Kubernetes server connection configuration.
+type KubernetesServer struct {
+
+	// configures the Kubernetes server Address.
+	// +kubebuilder:default=kubernetes.default
+	// +optional
+	URL string `json:"url,omitempty"`
+
+	// CABundle is a base64-encoded CA certificate
+	// +optional
+	CABundle []byte `json:"caBundle,omitempty"`
+
+	// see: https://external-secrets.io/v0.4.1/spec/#external-secrets.io/v1alpha1.CAProvider
+	// +optional
+	CAProvider *CAProvider `json:"caProvider,omitempty"`
+}
+
+// MachineIdentityScopeInWorkspace defines the scope of a machine identity in an Infisical workspace.
+type MachineIdentityScopeInWorkspace struct {
+	// SecretsPath specifies the path to the secrets within the workspace. Defaults to "/" if not provided.
+	// +kubebuilder:default="/"
+	// +optional
+	SecretsPath string `json:"secretsPath,omitempty"`
+	// Recursive indicates whether the secrets should be fetched recursively. Defaults to false if not provided.
 	// +kubebuilder:default=false
-	IgnoreSslCertificate bool `json:"ignoreSslCertificate,omitempty"`
+	// +optional
+	Recursive bool `json:"recursive,omitempty"`
+	// EnvironmentSlug is the required slug identifier for the environment.
+	// +kubebuilder:validation:Required
+	EnvironmentSlug string `json:"environmentSlug"`
+	// ProjectSlug is the required slug identifier for the project.
+	// +kubebuilder:validation:Required
+	ProjectSlug string `json:"projectSlug"`
+	// ExpandSecretReferences indicates whether secret references should be expanded. Defaults to true if not provided.
+	// +kubebuilder:default=true
+	// +optional
+	ExpandSecretReferences bool `json:"expandSecretReferences,omitempty"`
+}
+
+// NTLMProtocol contains the NTLM-specific configuration.
+type NTLMProtocol struct {
+	UserName esmeta.SecretKeySelector `json:"usernameSecret"`
+	Password esmeta.SecretKeySelector `json:"passwordSecret"`
+}
+
+// OnboardbaseAuthSecretRef holds secret references for onboardbase API Key credentials.
+type OnboardbaseAuthSecretRef struct {
+	// OnboardbaseAPIKey is the APIKey generated by an admin account.
+	// It is used to recognize and authorize access to a project and environment within onboardbase
+	// +kubebuilder:validation:Required
+	OnboardbaseAPIKeyRef esmeta.SecretKeySelector `json:"apiKeyRef"`
+	// OnboardbasePasscode is the passcode attached to the API Key
+	// +kubebuilder:validation:Required
+	OnboardbasePasscodeRef esmeta.SecretKeySelector `json:"passcodeRef"`
+}
+
+// OnboardbaseProvider configures a store to sync secrets using the Onboardbase provider.
+// Project and Config are required if not using a Service Token.
+type OnboardbaseProvider struct {
+	// Auth configures how the Operator authenticates with the Onboardbase API
+	Auth *OnboardbaseAuthSecretRef `json:"auth"`
+
+	// APIHost use this to configure the host url for the API for selfhosted installation, default is https://public.onboardbase.com/api/v1/
+	// +kubebuilder:default:="https://public.onboardbase.com/api/v1/"
+	APIHost string `json:"apiHost"`
+
+	// Project is an onboardbase project that the secrets should be pulled from
+	// +kubebuilder:validation:Required
+	// +kubebuilder:default:="development"
+	Project string `json:"project"`
+	// Environment is the name of an environmnent within a project to pull the secrets from
+	// +kubebuilder:validation:Required
+	// +kubebuilder:default:="development"
+	Environment string `json:"environment"`
+}
+
+// OnePasswordAuth contains a secretRef for credentials.
+type OnePasswordAuth struct {
+	SecretRef *OnePasswordAuthSecretRef `json:"secretRef"`
+}
+
+// OnePasswordAuthSecretRef holds secret references for 1Password credentials.
+type OnePasswordAuthSecretRef struct {
+	// The ConnectToken is used for authentication to a 1Password Connect Server.
+	ConnectToken esmeta.SecretKeySelector `json:"connectTokenSecretRef"`
+}
+
+// OnePasswordProvider configures a store to sync secrets using the 1Password Secret Manager provider.
+type OnePasswordProvider struct {
+	// Auth defines the information necessary to authenticate against OnePassword Connect Server
+	Auth *OnePasswordAuth `json:"auth"`
+	// ConnectHost defines the OnePassword Connect Server to connect to
+	ConnectHost string `json:"connectHost"`
+	// Vaults defines which OnePassword vaults to search in which order
+	Vaults map[string]int `json:"vaults"`
+}
+
+// OracleAuth defines authentication configuration for the Oracle Vault provider.
+type OracleAuth struct {
+
+	// Tenancy is the tenancy OCID where user is located.
+	Tenancy string `json:"tenancy"`
+
+	// User is an access OCID specific to the account.
+	User string `json:"user"`
+
+	// SecretRef to pass through sensitive information.
+	SecretRef OracleSecretRef `json:"secretRef"`
+}
+// OraclePrincipalType defines the type of principal used for authentication to Oracle Vault.
+// +kubebuilder:validation:Enum="";UserPrincipal;InstancePrincipal;Workload
+type OraclePrincipalType string
+
+// OracleProvider configures a store to sync secrets using an Oracle Vault backend.
+type OracleProvider struct {
+	// Region is the region where vault is located.
+	Region string `json:"region"`
+
+	// Vault is the vault's OCID of the specific vault where secret is located.
+	Vault string `json:"vault"`
+
+	// Compartment is the vault compartment OCID.
+	// Required for PushSecret
+	// +optional
+	Compartment string `json:"compartment,omitempty"`
+
+	// EncryptionKey is the OCID of the encryption key within the vault.
+	// Required for PushSecret
+	// +optional
+	EncryptionKey string `json:"encryptionKey,omitempty"`
+
+	// The type of principal to use for authentication. If left blank, the Auth struct will
+	// determine the principal type. This optional field must be specified if using
+	// workload identity.
+	// +optional
+	PrincipalType OraclePrincipalType `json:"principalType,omitempty"`
+
+	// Auth configures how secret-manager authenticates with the Oracle Vault.
+	// If empty, use the instance principal, otherwise the user credentials specified in Auth.
+	// +optional
+	Auth *OracleAuth `json:"auth,omitempty"`
+
+	// ServiceAccountRef specified the service account
+	// that should be used when authenticating with WorkloadIdentity.
+	// +optional
+	ServiceAccountRef *esmeta.ServiceAccountSelector `json:"serviceAccountRef,omitempty"`
+}
+
+// OracleSecretRef defines references to secrets containing Oracle credentials.
+type OracleSecretRef struct {
+	// PrivateKey is the user's API Signing Key in PEM format, used for authentication.
+	PrivateKey esmeta.SecretKeySelector `json:"privatekey"`
+
+	// Fingerprint is the fingerprint of the API private key.
+	Fingerprint esmeta.SecretKeySelector `json:"fingerprint"`
+}
+
+// PassboltAuth contains credentials and configuration for authenticating with the Passbolt server.
+type PassboltAuth struct {
+	// PasswordSecretRef is a reference to the secret containing the Passbolt password
+	PasswordSecretRef *esmeta.SecretKeySelector `json:"passwordSecretRef"`
+	// PrivateKeySecretRef is a reference to the secret containing the Passbolt private key
+	PrivateKeySecretRef *esmeta.SecretKeySelector `json:"privateKeySecretRef"`
+}
+
+// PassboltProvider defines configuration for the Passbolt provider.
+type PassboltProvider struct {
+	// Auth defines the information necessary to authenticate against Passbolt Server
+	Auth *PassboltAuth `json:"auth"`
+	// Host defines the Passbolt Server to connect to
+	Host string `json:"host"`
+}
+
+// PasswordDepotAuth defines the authentication method for the Password Depot provider.
+type PasswordDepotAuth struct {
+	SecretRef PasswordDepotSecretRef `json:"secretRef"`
+}
+// PasswordDepotProvider configures a store to sync secrets with a Password Depot instance.
+type PasswordDepotProvider struct {
+	// URL configures the Password Depot instance URL.
+	Host string `json:"host"`
+
+	// Database to use as source
+	Database string `json:"database"`
+
+	// Auth configures how secret-manager authenticates with a Password Depot instance.
+	Auth PasswordDepotAuth `json:"auth"`
+}
+
+// PasswordDepotSecretRef defines a reference to a secret containing credentials for the Password Depot provider.
+type PasswordDepotSecretRef struct {
+	// Username / Password is used for authentication.
+	// +optional
+	Credentials esmeta.SecretKeySelector `json:"credentials,omitempty"`
+}
+
+// PreviderAuth contains a secretRef for credentials.
+type PreviderAuth struct {
+	// +optional
+	SecretRef *PreviderAuthSecretRef `json:"secretRef,omitempty"`
+}
+
+// PreviderAuthSecretRef holds secret references for Previder Vault credentials.
+type PreviderAuthSecretRef struct {
+	// The AccessToken is used for authentication
+	AccessToken esmeta.SecretKeySelector `json:"accessToken"`
+}
+// PreviderProvider configures a store to sync secrets using the Previder Secret Manager provider.
+type PreviderProvider struct {
+	Auth PreviderAuth `json:"auth"`
+	// +optional
+	BaseURI string `json:"baseUri,omitempty"`
+}
+
+// PulumiProvider defines configuration for the Pulumi provider.
+type PulumiProvider struct {
+	// APIURL is the URL of the Pulumi API.
+	// +kubebuilder:default="https://api.pulumi.com/api/esc"
+	APIURL string `json:"apiUrl,omitempty"`
+
+	// AccessToken is the access tokens to sign in to the Pulumi Cloud Console.
+	AccessToken *PulumiProviderSecretRef `json:"accessToken"`
+
+	// Organization are a space to collaborate on shared projects and stacks.
+	// To create a new organization, visit https://app.pulumi.com/ and click "New Organization".
+	Organization string `json:"organization"`
+
+	// Project is the name of the Pulumi ESC project the environment belongs to.
+	Project string `json:"project"`
+	// Environment are YAML documents composed of static key-value pairs, programmatic expressions,
+	// dynamically retrieved values from supported providers including all major clouds,
+	// and other Pulumi ESC environments.
+	// To create a new environment, visit https://www.pulumi.com/docs/esc/environments/ for more information.
+	Environment string `json:"environment"`
+}
+
+// PulumiProviderSecretRef defines a reference to a secret containing credentials for the Pulumi provider.
+type PulumiProviderSecretRef struct {
+	// SecretRef is a reference to a secret containing the Pulumi API token.
+	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
 }
 
 // ScalewayProvider defines configuration for the Scaleway provider.
@@ -273,45 +1103,45 @@ type ScalewayProvider struct {
 	// SecretKey is the non-secret part of the api key.
 	SecretKey *ScalewayProviderSecretRef `json:"secretKey"`
 }
+// ScalewayProviderSecretRef defines a reference to a secret containing credentials for the Scaleway provider.
+type ScalewayProviderSecretRef struct {
 
-// PulumiProviderSecretRef defines a reference to a secret containing credentials for the Pulumi provider.
-type PulumiProviderSecretRef struct {
-	// SecretRef is a reference to a secret containing the Pulumi API token.
+	// Value can be specified directly to set a value without using a secret.
+	// +optional
+	Value string `json:"value,omitempty"`
+
+	// SecretRef references a key in a secret that will be used as value.
+	// +optional
 	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
 }
 
-// VaultAppRole authenticates with Vault using the App Role auth mechanism,
-// with the role and secret stored in a Kubernetes Secret resource.
-type VaultAppRole struct {
-	// Path where the App Role authentication backend is mounted
-	// in Vault, e.g: "approle"
-	// +kubebuilder:default=approle
-	Path string `json:"path"`
+// SecretServerProvider defines configuration for the Delinea Secret Server provider.
+// See https://github.com/DelineaXPM/tss-sdk-go/blob/main/server/server.go.
+type SecretServerProvider struct {
 
-	// RoleID configured in the App Role authentication backend when setting
-	// up the authentication backend in Vault.
-	//+optional
-	RoleID string `json:"roleId,omitempty"`
+	// Username is the secret server account username.
+	// +required
+	Username *SecretServerProviderRef `json:"username"`
 
-	// Reference to a key in a Secret that contains the App Role ID used
-	// to authenticate with Vault.
-	// The `key` field must be specified and denotes which entry within the Secret
-	// resource is used as the app role id.
-	//+optional
-	RoleRef *esmeta.SecretKeySelector `json:"roleRef,omitempty"`
+	// Password is the secret server account password.
+	// +required
+	Password *SecretServerProviderRef `json:"password"`
 
-	// Reference to a key in a Secret that contains the App Role secret used
-	// to authenticate with Vault.
-	// The `key` field must be specified and denotes which entry within the Secret
-	// resource is used as the app role secret.
-	SecretRef esmeta.SecretKeySelector `json:"secretRef"`
+	// ServerURL
+	// URL to your secret server installation
+	// +required
+	ServerURL string `json:"serverURL"`
 }
+// SecretServerProviderRef defines a reference to a secret containing credentials for the Secret Server provider.
+type SecretServerProviderRef struct {
 
-// PasswordDepotSecretRef defines a reference to a secret containing credentials for the Password Depot provider.
-type PasswordDepotSecretRef struct {
-	// Username / Password is used for authentication.
+	// Value can be specified directly to set a value without using a secret.
 	// +optional
-	Credentials esmeta.SecretKeySelector `json:"credentials,omitempty"`
+	Value string `json:"value,omitempty"`
+
+	// SecretRef references a key in a secret that will be used as value.
+	// +optional
+	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
 }
 
 // SecretStoreProvider contains the provider-specific configuration.
@@ -459,636 +1289,6 @@ type SecretStoreProvider struct {
 	CloudruSM *CloudruSMProvider `json:"cloudrusm,omitempty"`
 }
 
-// VaultClientTLS is the configuration used for client side related TLS communication,
-// when the Vault server requires mutual authentication.
-type VaultClientTLS struct {
-	// CertSecretRef is a certificate added to the transport layer
-	// when communicating with the Vault server.
-	// If no key for the Secret is specified, external-secret will default to 'tls.crt'.
-	// +optional
-	CertSecretRef *esmeta.SecretKeySelector `json:"certSecretRef,omitempty"`
-
-	// KeySecretRef to a key in a Secret resource containing client private key
-	// added to the transport layer when communicating with the Vault server.
-	// If no key for the Secret is specified, external-secret will default to 'tls.key'.
-	// +optional
-	KeySecretRef *esmeta.SecretKeySelector `json:"keySecretRef,omitempty"`
-}
-
-// GitlabAuth defines the authentication method for the GitLab provider.
-type GitlabAuth struct {
-	SecretRef GitlabSecretRef `json:"SecretRef"`
-}
-
-// KubernetesAuth defines authentication methods for the Kubernetes provider.
-// +kubebuilder:validation:MinProperties=1
-// +kubebuilder:validation:MaxProperties=1
-type KubernetesAuth struct {
-	// has both clientCert and clientKey as secretKeySelector
-	// +optional
-	Cert *CertAuth `json:"cert,omitempty"`
-
-	// use static token to authenticate with
-	// +optional
-	Token *TokenAuth `json:"token,omitempty"`
-
-	// points to a service account that should be used for authentication
-	// +optional
-	ServiceAccount *esmeta.ServiceAccountSelector `json:"serviceAccount,omitempty"`
-}
-
-// GithubProvider configures a store to push secrets to Github Actions.
-type GithubProvider struct {
-	// URL configures the Github instance URL. Defaults to https://github.com/.
-	//+kubebuilder:default="https://github.com/"
-	URL string `json:"url,omitempty"`
-	// Upload URL for enterprise instances. Default to URL.
-	//+optional
-	UploadURL string `json:"uploadURL,omitempty"`
-	// auth configures how secret-manager authenticates with a Github instance.
-	Auth GithubAppAuth `json:"auth"`
-
-	// appID specifies the Github APP that will be used to authenticate the client
-	AppID int64 `json:"appID"`
-
-	// installationID specifies the Github APP installation that will be used to authenticate the client
-	InstallationID int64 `json:"installationID"`
-
-	// organization will be used to fetch secrets from the Github organization
-	Organization string `json:"organization"`
-
-	// repository will be used to fetch secrets from the Github repository within an organization
-	//+optional
-	Repository string `json:"repository,omitempty"`
-
-	// environment will be used to fetch secrets from a particular environment within a github repository
-	//+optional
-	Environment string `json:"environment,omitempty"`
-}
-
-// BitwardenSecretsManagerProvider configures a store to sync secrets with a Bitwarden Secrets Manager instance.
-type BitwardenSecretsManagerProvider struct {
-	APIURL                string `json:"apiURL,omitempty"`
-	IdentityURL           string `json:"identityURL,omitempty"`
-	BitwardenServerSDKURL string `json:"bitwardenServerSDKURL,omitempty"`
-	// Base64 encoded certificate for the bitwarden server sdk. The sdk MUST run with HTTPS to make sure no MITM attack
-	// can be performed.
-	// +optional
-	CABundle string `json:"caBundle,omitempty"`
-	// see: https://external-secrets.io/latest/spec/#external-secrets.io/v1alpha1.CAProvider
-	// +optional
-	CAProvider *CAProvider `json:"caProvider,omitempty"`
-	// OrganizationID determines which organization this secret store manages.
-	OrganizationID string `json:"organizationID"`
-	// ProjectID determines which project this secret store manages.
-	ProjectID string `json:"projectID"`
-	// Auth configures how secret-manager authenticates with a bitwarden machine account instance.
-	// Make sure that the token being used has permissions on the given secret.
-	Auth BitwardenSecretsManagerAuth `json:"auth"`
-}
-
-// WebhookProvider configures a store to sync secrets from simple web APIs.
-type WebhookProvider struct {
-	// Webhook Method
-	// +optional, default GET
-	Method string `json:"method,omitempty"`
-
-	// Webhook url to call
-	URL string `json:"url"`
-
-	// Headers
-	// +optional
-	Headers map[string]string `json:"headers,omitempty"`
-
-	// Auth specifies a authorization protocol. Only one protocol may be set.
-	// +optional
-	Auth *AuthorizationProtocol `json:"auth,omitempty"`
-
-	// Body
-	// +optional
-	Body string `json:"body,omitempty"`
-
-	// Timeout
-	// +optional
-	Timeout *metav1.Duration `json:"timeout,omitempty"`
-
-	// Result formatting
-	Result WebhookResult `json:"result"`
-
-	// Secrets to fill in templates
-	// These secrets will be passed to the templating function as key value pairs under the given name
-	// +optional
-	Secrets []WebhookSecret `json:"secrets,omitempty"`
-
-	// PEM encoded CA bundle used to validate webhook server certificate. Only used
-	// if the Server URL is using HTTPS protocol. This parameter is ignored for
-	// plain HTTP protocol connection. If not set the system root certificates
-	// are used to validate the TLS connection.
-	// +optional
-	CABundle []byte `json:"caBundle,omitempty"`
-
-	// The provider for the CA bundle to use to validate webhook server certificate.
-	// +optional
-	CAProvider *WebhookCAProvider `json:"caProvider,omitempty"`
-}
-
-// VaultKVStoreVersion defines the version of the KV store in Vault.
-type VaultKVStoreVersion string
-
-// AkeylessKubernetesAuth authenticates with Akeyless using a Kubernetes ServiceAccount token.
-type AkeylessKubernetesAuth struct {
-
-	// the Akeyless Kubernetes auth-method access-id
-	AccessID string `json:"accessID"`
-
-	// Kubernetes-auth configuration name in Akeyless-Gateway
-	K8sConfName string `json:"k8sConfName"`
-
-	// Optional service account field containing the name of a kubernetes ServiceAccount.
-	// If the service account is specified, the service account secret token JWT will be used
-	// for authenticating with Akeyless. If the service account selector is not supplied,
-	// the secretRef will be used instead.
-	// +optional
-	ServiceAccountRef *esmeta.ServiceAccountSelector `json:"serviceAccountRef,omitempty"`
-
-	// Optional secret field containing a Kubernetes ServiceAccount JWT used
-	// for authenticating with Akeyless. If a name is specified without a key,
-	// `token` is the default. If one is not specified, the one bound to
-	// the controller will be used.
-	// +optional
-	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
-}
-
-// GitlabSecretRef defines a reference to a secret containing credentials for the GitLab provider.
-type GitlabSecretRef struct {
-	// AccessToken is used for authentication.
-	AccessToken esmeta.SecretKeySelector `json:"accessToken,omitempty"`
-}
-
-// PulumiProvider defines configuration for the Pulumi provider.
-type PulumiProvider struct {
-	// APIURL is the URL of the Pulumi API.
-	// +kubebuilder:default="https://api.pulumi.com/api/esc"
-	APIURL string `json:"apiUrl,omitempty"`
-
-	// AccessToken is the access tokens to sign in to the Pulumi Cloud Console.
-	AccessToken *PulumiProviderSecretRef `json:"accessToken"`
-
-	// Organization are a space to collaborate on shared projects and stacks.
-	// To create a new organization, visit https://app.pulumi.com/ and click "New Organization".
-	Organization string `json:"organization"`
-
-	// Project is the name of the Pulumi ESC project the environment belongs to.
-	Project string `json:"project"`
-	// Environment are YAML documents composed of static key-value pairs, programmatic expressions,
-	// dynamically retrieved values from supported providers including all major clouds,
-	// and other Pulumi ESC environments.
-	// To create a new environment, visit https://www.pulumi.com/docs/esc/environments/ for more information.
-	Environment string `json:"environment"`
-}
-
-// YandexCertificateManagerCAProvider defines CA certificate configuration for Yandex Certificate Manager.
-type YandexCertificateManagerCAProvider struct {
-	Certificate esmeta.SecretKeySelector `json:"certSecretRef,omitempty"`
-}
-
-// FakeProviderData defines a key-value pair for the fake provider used in testing.
-type FakeProviderData struct {
-	Key     string `json:"key"`
-	Value   string `json:"value"`
-	Version string `json:"version,omitempty"`
-}
-
-// PasswordDepotAuth defines the authentication method for the Password Depot provider.
-type PasswordDepotAuth struct {
-	SecretRef PasswordDepotSecretRef `json:"secretRef"`
-}
-
-// UniversalAuthCredentials defines the credentials for Infisical Universal Auth.
-type UniversalAuthCredentials struct {
-	// +kubebuilder:validation:Required
-	ClientID esmeta.SecretKeySelector `json:"clientId"`
-	// +kubebuilder:validation:Required
-	ClientSecret esmeta.SecretKeySelector `json:"clientSecret"`
-}
-
-// GCPSMAuthSecretRef defines a reference to a secret containing credentials for the GCP Secret Manager provider.
-type GCPSMAuthSecretRef struct {
-	// The SecretAccessKey is used for authentication
-	// +optional
-	SecretAccessKey esmeta.SecretKeySelector `json:"secretAccessKeySecretRef,omitempty"`
-}
-
-// AlibabaRRSAAuth authenticates against Alibaba using RRSA (Resource-oriented RAM-based Service Authentication).
-type AlibabaRRSAAuth struct {
-	OIDCProviderARN   string `json:"oidcProviderArn"`
-	OIDCTokenFilePath string `json:"oidcTokenFilePath"`
-	RoleARN           string `json:"roleArn"`
-	SessionName       string `json:"sessionName"`
-}
-
-// AWSServiceType is an enum that defines the service/API that is used to fetch the secrets.
-// +kubebuilder:validation:Enum=SecretsManager;ParameterStore
-type AWSServiceType string
-
-// AzureKVAuth defines configuration for authentication with Azure Key Vault.
-type AzureKVAuth struct {
-	// The Azure clientId of the service principle or managed identity used for authentication.
-	// +optional
-	ClientID *smmeta.SecretKeySelector `json:"clientId,omitempty"`
-
-	// The Azure tenantId of the managed identity used for authentication.
-	// +optional
-	TenantID *smmeta.SecretKeySelector `json:"tenantId,omitempty"`
-
-	// The Azure ClientSecret of the service principle used for authentication.
-	// +optional
-	ClientSecret *smmeta.SecretKeySelector `json:"clientSecret,omitempty"`
-
-	// The Azure ClientCertificate of the service principle used for authentication.
-	// +optional
-	ClientCertificate *smmeta.SecretKeySelector `json:"clientCertificate,omitempty"`
-}
-
-// BitwardenSecretsManagerAuth contains the ref to the secret that contains the machine account token.
-type BitwardenSecretsManagerAuth struct {
-	SecretRef BitwardenSecretsManagerSecretRef `json:"secretRef"`
-}
-
-// OnboardbaseAuthSecretRef holds secret references for onboardbase API Key credentials.
-type OnboardbaseAuthSecretRef struct {
-	// OnboardbaseAPIKey is the APIKey generated by an admin account.
-	// It is used to recognize and authorize access to a project and environment within onboardbase
-	// +kubebuilder:validation:Required
-	OnboardbaseAPIKeyRef esmeta.SecretKeySelector `json:"apiKeyRef"`
-	// OnboardbasePasscode is the passcode attached to the API Key
-	// +kubebuilder:validation:Required
-	OnboardbasePasscodeRef esmeta.SecretKeySelector `json:"passcodeRef"`
-}
-
-// AkeylessAuthSecretRef defines how to authenticate using a secret reference.
-// AKEYLESS_ACCESS_TYPE_PARAM: AZURE_OBJ_ID OR GCP_AUDIENCE OR ACCESS_KEY OR KUB_CONFIG_NAME.
-type AkeylessAuthSecretRef struct {
-	// The SecretAccessID is used for authentication
-	AccessID        esmeta.SecretKeySelector `json:"accessID,omitempty"`
-	AccessType      esmeta.SecretKeySelector `json:"accessType,omitempty"`
-	AccessTypeParam esmeta.SecretKeySelector `json:"accessTypeParam,omitempty"`
-}
-
-// AWSProvider configures a store to sync secrets with AWS.
-type AWSProvider struct {
-	// Service defines which service should be used to fetch the secrets
-	Service AWSServiceType `json:"service"`
-
-	// Auth defines the information necessary to authenticate against AWS
-	// if not set aws sdk will infer credentials from your environment
-	// see: https://docs.aws.amazon.com/sdk-for-go/v1/developer-guide/configuring-sdk.html#specifying-credentials
-	// +optional
-	Auth AWSAuth `json:"auth,omitempty"`
-
-	// Role is a Role ARN which the provider will assume
-	// +optional
-	Role string `json:"role,omitempty"`
-
-	// AWS Region to be used for the provider
-	Region string `json:"region"`
-
-	// AdditionalRoles is a chained list of Role ARNs which the provider will sequentially assume before assuming the Role
-	// +optional
-	AdditionalRoles []string `json:"additionalRoles,omitempty"`
-
-	// AWS External ID set on assumed IAM roles
-	ExternalID string `json:"externalID,omitempty"`
-
-	// AWS STS assume role session tags
-	// +optional
-	SessionTags []*Tag `json:"sessionTags,omitempty"`
-
-	// SecretsManager defines how the provider behaves when interacting with AWS SecretsManager
-	// +optional
-	SecretsManager *SecretsManager `json:"secretsManager,omitempty"`
-
-	// AWS STS assume role transitive session tags. Required when multiple rules are used with the provider
-	// +optional
-	TransitiveTagKeys []*string `json:"transitiveTagKeys,omitempty"`
-
-	// Prefix adds a prefix to all retrieved values.
-	// +optional
-	Prefix string `json:"prefix,omitempty"`
-}
-
-// DopplerProvider configures a store to sync secrets using the Doppler provider.
-// Project and Config are required if not using a Service Token.
-type DopplerProvider struct {
-	// Auth configures how the Operator authenticates with the Doppler API
-	Auth *DopplerAuth `json:"auth"`
-
-	// Doppler project (required if not using a Service Token)
-	// +optional
-	Project string `json:"project,omitempty"`
-
-	// Doppler config (required if not using a Service Token)
-	// +optional
-	Config string `json:"config,omitempty"`
-
-	// Environment variable compatible name transforms that change secret names to a different format
-	// +kubebuilder:validation:Enum=upper-camel;camel;lower-snake;tf-var;dotnet-env;lower-kebab
-	// +optional
-	NameTransformer string `json:"nameTransformer,omitempty"`
-
-	// Format enables the downloading of secrets as a file (string)
-	// +kubebuilder:validation:Enum=json;dotnet-json;env;yaml;docker
-	// +optional
-	Format string `json:"format,omitempty"`
-}
-
-// SecretServerProviderRef defines a reference to a secret containing credentials for the Secret Server provider.
-type SecretServerProviderRef struct {
-
-	// Value can be specified directly to set a value without using a secret.
-	// +optional
-	Value string `json:"value,omitempty"`
-
-	// SecretRef references a key in a secret that will be used as value.
-	// +optional
-	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
-}
-
-// GitlabProvider configures a store to sync secrets with a GitLab instance.
-type GitlabProvider struct {
-	// URL configures the GitLab instance URL. Defaults to https://gitlab.com/.
-	URL string `json:"url,omitempty"`
-
-	// Auth configures how secret-manager authenticates with a GitLab instance.
-	Auth GitlabAuth `json:"auth"`
-
-	// ProjectID specifies a project where secrets are located.
-	ProjectID string `json:"projectID,omitempty"`
-
-	// InheritFromGroups specifies whether parent groups should be discovered and checked for secrets.
-	InheritFromGroups bool `json:"inheritFromGroups,omitempty"`
-
-	// GroupIDs specify, which gitlab groups to pull secrets from. Group secrets are read from left to right followed by the project variables.
-	GroupIDs []string `json:"groupIDs,omitempty"`
-
-	// Environment environment_scope of gitlab CI/CD variables (Please see https://docs.gitlab.com/ee/ci/environments/#create-a-static-environment on how to create environments)
-	Environment string `json:"environment,omitempty"`
-
-	// Base64 encoded certificate for the GitLab server sdk. The sdk MUST run with HTTPS to make sure no MITM attack
-	// can be performed.
-	// +optional
-	CABundle []byte `json:"caBundle,omitempty"`
-
-	// see: https://external-secrets.io/latest/spec/#external-secrets.io/v1alpha1.CAProvider
-	// +optional
-	CAProvider *CAProvider `json:"caProvider,omitempty"`
-}
-
-// InfisicalProvider configures a store to sync secrets using the Infisical provider.
-type InfisicalProvider struct {
-	// Auth configures how the Operator authenticates with the Infisical API
-	// +kubebuilder:validation:Required
-	Auth InfisicalAuth `json:"auth"`
-	// SecretsScope defines the scope of the secrets within the workspace
-	// +kubebuilder:validation:Required
-	SecretsScope MachineIdentityScopeInWorkspace `json:"secretsScope"`
-	// HostAPI specifies the base URL of the Infisical API. If not provided, it defaults to "https://app.infisical.com/api".
-	// +kubebuilder:default="https://app.infisical.com/api"
-	// +optional
-	HostAPI string `json:"hostAPI,omitempty"`
-}
-
-// KubernetesServer defines the Kubernetes server connection configuration.
-type KubernetesServer struct {
-
-	// configures the Kubernetes server Address.
-	// +kubebuilder:default=kubernetes.default
-	// +optional
-	URL string `json:"url,omitempty"`
-
-	// CABundle is a base64-encoded CA certificate
-	// +optional
-	CABundle []byte `json:"caBundle,omitempty"`
-
-	// see: https://external-secrets.io/v0.4.1/spec/#external-secrets.io/v1alpha1.CAProvider
-	// +optional
-	CAProvider *CAProvider `json:"caProvider,omitempty"`
-}
-
-// DopplerAuth defines the authentication method for the Doppler provider.
-type DopplerAuth struct {
-	SecretRef DopplerAuthSecretRef `json:"secretRef"`
-}
-
-// FortanixProviderSecretRef defines a reference to a secret containing credentials for the Fortanix provider.
-type FortanixProviderSecretRef struct {
-	// SecretRef is a reference to a secret containing the SDKMS API Key.
-	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
-}
-
-// Device42Auth defines the authentication method for the Device42 provider.
-type Device42Auth struct {
-	SecretRef Device42SecretRef `json:"secretRef"`
-}
-
-// VaultJwtAuth authenticates with Vault using the JWT/OIDC authentication
-// method, with the role name and a token stored in a Kubernetes Secret resource or
-// a Kubernetes service account token retrieved via `TokenRequest`.
-type VaultJwtAuth struct {
-	// Path where the JWT authentication backend is mounted
-	// in Vault, e.g: "jwt"
-	// +kubebuilder:default=jwt
-	Path string `json:"path"`
-
-	// Role is a JWT role to authenticate using the JWT/OIDC Vault
-	// authentication method
-	// +optional
-	Role string `json:"role,omitempty"`
-
-	// Optional SecretRef that refers to a key in a Secret resource containing JWT token to
-	// authenticate with Vault using the JWT/OIDC authentication method.
-	// +optional
-	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
-
-	// Optional ServiceAccountToken specifies the Kubernetes service account for which to request
-	// a token for with the `TokenRequest` API.
-	// +optional
-	KubernetesServiceAccountToken *VaultKubernetesServiceAccountTokenAuth `json:"kubernetesServiceAccountToken,omitempty"`
-}
-
-// Device42Provider configures a store to sync secrets with a Device42 instance.
-type Device42Provider struct {
-	// URL configures the Device42 instance URL.
-	Host string `json:"host"`
-
-	// Auth configures how secret-manager authenticates with a Device42 instance.
-	Auth Device42Auth `json:"auth"`
-}
-
-// BeyondtrustServer defines configuration for connecting to BeyondTrust Password Safe server.
-type BeyondtrustServer struct {
-	// +required - BeyondTrust Password Safe API URL. https://example.com:443/beyondtrust/api/public/V3.
-	APIURL string `json:"apiUrl"`
-	// +optional - The recommended version is 3.1. If no version is specified, the default API version 3.0 will be used
-	APIVersion string `json:"apiVersion,omitempty"`
-	// The secret retrieval type. SECRET = Secrets Safe (credential, text, file). MANAGED_ACCOUNT = Password Safe account associated with a system.
-	RetrievalType string `json:"retrievalType,omitempty"`
-	// A character that separates the folder names.
-	Separator string `json:"separator,omitempty"`
-	// +required - Indicates whether to verify the certificate authority on the Secrets Safe instance. Warning - false is insecure, instructs the BT provider not to verify the certificate authority.
-	VerifyCA bool `json:"verifyCA"`
-	// Timeout specifies a time limit for requests made by this Client. The timeout includes connection time, any redirects, and reading the response body. Defaults to 45 seconds.
-	ClientTimeOutSeconds int `json:"clientTimeOutSeconds,omitempty"`
-}
-
-// BitwardenSecretsManagerSecretRef contains the credential ref to the bitwarden instance.
-type BitwardenSecretsManagerSecretRef struct {
-	// AccessToken used for the bitwarden instance.
-	// +required
-	Credentials esmeta.SecretKeySelector `json:"credentials"`
-}
-
-// AWSAuth tells the controller how to do authentication with aws.
-// Only one of secretRef or jwt can be specified.
-// if none is specified the controller will load credentials using the aws sdk defaults.
-type AWSAuth struct {
-	// +optional
-	SecretRef *AWSAuthSecretRef `json:"secretRef,omitempty"`
-	// +optional
-	JWTAuth *AWSJWTAuth `json:"jwt,omitempty"`
-}
-
-// Tag defines a tag key and value for AWS resources.
-type Tag struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
-}
-
-// IBMAuthSecretRef defines a reference to a secret containing credentials for the IBM provider.
-type IBMAuthSecretRef struct {
-	// The SecretAccessKey is used for authentication
-	SecretAPIKey esmeta.SecretKeySelector `json:"secretApiKeySecretRef,omitempty"`
-}
-
-// NTLMProtocol contains the NTLM-specific configuration.
-type NTLMProtocol struct {
-	UserName esmeta.SecretKeySelector `json:"usernameSecret"`
-	Password esmeta.SecretKeySelector `json:"passwordSecret"`
-}
-
-// WebhookCAProviderType defines the type of provider to use for CA certificates with Webhook providers.
-type WebhookCAProviderType string
-
-// AkeylessProvider Configures an store to sync secrets using Akeyless KV.
-type AkeylessProvider struct {
-
-	// Akeyless GW API Url from which the secrets to be fetched from.
-	AkeylessGWApiURL *string `json:"akeylessGWApiURL"`
-
-	// Auth configures how the operator authenticates with Akeyless.
-	Auth *AkeylessAuth `json:"authSecretRef"`
-
-	// PEM/base64 encoded CA bundle used to validate Akeyless Gateway certificate. Only used
-	// if the AkeylessGWApiURL URL is using HTTPS protocol. If not set the system root certificates
-	// are used to validate the TLS connection.
-	// +optional
-	CABundle []byte `json:"caBundle,omitempty"`
-
-	// The provider for the CA bundle to use to validate Akeyless Gateway certificate.
-	// +optional
-	CAProvider *CAProvider `json:"caProvider,omitempty"`
-}
-
-// OracleProvider configures a store to sync secrets using an Oracle Vault backend.
-type OracleProvider struct {
-	// Region is the region where vault is located.
-	Region string `json:"region"`
-
-	// Vault is the vault's OCID of the specific vault where secret is located.
-	Vault string `json:"vault"`
-
-	// Compartment is the vault compartment OCID.
-	// Required for PushSecret
-	// +optional
-	Compartment string `json:"compartment,omitempty"`
-
-	// EncryptionKey is the OCID of the encryption key within the vault.
-	// Required for PushSecret
-	// +optional
-	EncryptionKey string `json:"encryptionKey,omitempty"`
-
-	// The type of principal to use for authentication. If left blank, the Auth struct will
-	// determine the principal type. This optional field must be specified if using
-	// workload identity.
-	// +optional
-	PrincipalType OraclePrincipalType `json:"principalType,omitempty"`
-
-	// Auth configures how secret-manager authenticates with the Oracle Vault.
-	// If empty, use the instance principal, otherwise the user credentials specified in Auth.
-	// +optional
-	Auth *OracleAuth `json:"auth,omitempty"`
-
-	// ServiceAccountRef specified the service account
-	// that should be used when authenticating with WorkloadIdentity.
-	// +optional
-	ServiceAccountRef *esmeta.ServiceAccountSelector `json:"serviceAccountRef,omitempty"`
-}
-
-// FortanixProvider configures a store to sync secrets using the Fortanix SDKMS provider.
-type FortanixProvider struct {
-	// APIURL is the URL of SDKMS API. Defaults to `sdkms.fortanix.com`.
-	APIURL string `json:"apiUrl,omitempty"`
-
-	// APIKey is the API token to access SDKMS Applications.
-	APIKey *FortanixProviderSecretRef `json:"apiKey,omitempty"`
-}
-
-/*
-SenhaseguraAuth tells the controller how to do auth in senhasegura.
-*/
-type SenhaseguraAuth struct {
-	ClientID     string                   `json:"clientId"`
-	ClientSecret esmeta.SecretKeySelector `json:"clientSecretSecretRef"`
-}
-
-// AWSJWTAuth authenticates against AWS using service account tokens from the Kubernetes cluster.
-type AWSJWTAuth struct {
-	ServiceAccountRef *esmeta.ServiceAccountSelector `json:"serviceAccountRef,omitempty"`
-}
-
-// VaultCertAuth authenticates with Vault using the JWT/OIDC authentication
-// method, with the role name and token stored in a Kubernetes Secret resource.
-type VaultCertAuth struct {
-	// ClientCert is a certificate to authenticate using the Cert Vault
-	// authentication method
-	// +optional
-	ClientCert esmeta.SecretKeySelector `json:"clientCert,omitempty"`
-
-	// SecretRef to a key in a Secret resource containing client private key to
-	// authenticate with Vault using the Cert authentication method
-	// +optional
-	SecretRef esmeta.SecretKeySelector `json:"secretRef,omitempty"`
-}
-
-// CertAuth defines certificate-based authentication for the Kubernetes provider.
-type CertAuth struct {
-	ClientCert esmeta.SecretKeySelector `json:"clientCert,omitempty"`
-	ClientKey  esmeta.SecretKeySelector `json:"clientKey,omitempty"`
-}
-
-// CSMAuthSecretRef holds secret references for Cloud.ru credentials.
-type CSMAuthSecretRef struct {
-	// The AccessKeyID is used for authentication
-	AccessKeyID esmeta.SecretKeySelector `json:"accessKeyIDSecretRef"`
-	// The AccessKeySecret is used for authentication
-	AccessKeySecret esmeta.SecretKeySelector `json:"accessKeySecretSecretRef"`
-}
-
-// GithubAppAuth defines the GitHub App authentication mechanism for the GitHub provider.
-type GithubAppAuth struct {
-	PrivateKey esmeta.SecretKeySelector `json:"privateKey"`
-}
-
 // SecretStoreRetrySettings defines configuration for retrying failed requests to the provider.
 type SecretStoreRetrySettings struct {
 	// MaxRetries is the maximum number of retry attempts.
@@ -1096,26 +1296,6 @@ type SecretStoreRetrySettings struct {
 	// RetryInterval is the interval between retry attempts.
 	RetryInterval *string `json:"retryInterval,omitempty"`
 }
-
-// OnePasswordProvider configures a store to sync secrets using the 1Password Secret Manager provider.
-type OnePasswordProvider struct {
-	// Auth defines the information necessary to authenticate against OnePassword Connect Server
-	Auth *OnePasswordAuth `json:"auth"`
-	// ConnectHost defines the OnePassword Connect Server to connect to
-	ConnectHost string `json:"connectHost"`
-	// Vaults defines which OnePassword vaults to search in which order
-	Vaults map[string]int `json:"vaults"`
-}
-
-// WebhookSecret defines a secret to be used in webhook templates.
-type WebhookSecret struct {
-	// Name of this secret in templates
-	Name string `json:"name"`
-
-	// Secret ref to fill in credentials
-	SecretRef esmeta.SecretKeySelector `json:"secretRef"`
-}
-
 // SecretStoreSpec defines the desired state of SecretStore.
 type SecretStoreSpec struct {
 	// Used to select the correct ESO controller (think: ingress.ingressClassName)
@@ -1139,26 +1319,104 @@ type SecretStoreSpec struct {
 	Conditions []ClusterSecretStoreCondition `json:"conditions,omitempty"`
 }
 
-// ChefProvider configures a store to sync secrets using basic chef server connection credentials.
-type ChefProvider struct {
-	// Auth defines the information necessary to authenticate against chef Server
-	Auth *ChefAuth `json:"auth"`
-	// UserName should be the user ID on the chef server
-	UserName string `json:"username"`
-	// ServerURL is the chef server URL used to connect to. If using orgs you should include your org in the url and terminate the url with a "/"
-	ServerURL string `json:"serverUrl"`
+// SecretsManager defines how the provider behaves when interacting with AWS
+// SecretsManager. Some of these settings are only applicable to controlling how
+// secrets are deleted, and hence only apply to PushSecret (and only when
+// deletionPolicy is set to Delete).
+type SecretsManager struct {
+	// Specifies whether to delete the secret without any recovery window. You
+	// can't use both this parameter and RecoveryWindowInDays in the same call.
+	// If you don't use either, then by default Secrets Manager uses a 30 day
+	// recovery window.
+	// see: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_DeleteSecret.html#SecretsManager-DeleteSecret-request-ForceDeleteWithoutRecovery
+	// +optional
+	ForceDeleteWithoutRecovery bool `json:"forceDeleteWithoutRecovery,omitempty"`
+	// The number of days from 7 to 30 that Secrets Manager waits before
+	// permanently deleting the secret. You can't use both this parameter and
+	// ForceDeleteWithoutRecovery in the same call. If you don't use either,
+	// then by default Secrets Manager uses a 30 day recovery window.
+	// see: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_DeleteSecret.html#SecretsManager-DeleteSecret-request-RecoveryWindowInDays
+	// +optional
+	RecoveryWindowInDays int64 `json:"recoveryWindowInDays,omitempty"`
 }
 
-// BeyondtrustProvider defines configuration for the BeyondTrust Password Safe provider.
-type BeyondtrustProvider struct {
-
-	// Auth configures how the operator authenticates with Beyondtrust.
-	Auth *BeyondtrustAuth `json:"auth"`
-
-	// Auth configures how API server works.
-	Server *BeyondtrustServer `json:"server"`
+/*
+SenhaseguraAuth tells the controller how to do auth in senhasegura.
+*/
+type SenhaseguraAuth struct {
+	ClientID     string                   `json:"clientId"`
+	ClientSecret esmeta.SecretKeySelector `json:"clientSecretSecretRef"`
 }
 
+/*
+SenhaseguraModuleType enum defines senhasegura target module to fetch secrets
++kubebuilder:validation:Enum=DSM
+*/
+type SenhaseguraModuleType string
+
+/*
+SenhaseguraProvider setup a store to sync secrets with senhasegura.
+*/
+type SenhaseguraProvider struct {
+	/* URL of senhasegura */
+	URL string `json:"url"`
+
+	/* Module defines which senhasegura module should be used to get secrets */
+	Module SenhaseguraModuleType `json:"module"`
+
+	/* Auth defines parameters to authenticate in senhasegura */
+	Auth SenhaseguraAuth `json:"auth"`
+
+	// IgnoreSslCertificate defines if SSL certificate must be ignored
+	// +kubebuilder:default=false
+	IgnoreSslCertificate bool `json:"ignoreSslCertificate,omitempty"`
+}
+
+// Tag defines a tag key and value for AWS resources.
+type Tag struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// TokenAuth defines token-based authentication for the Kubernetes provider.
+type TokenAuth struct {
+	BearerToken esmeta.SecretKeySelector `json:"bearerToken,omitempty"`
+}
+
+// UniversalAuthCredentials defines the credentials for Infisical Universal Auth.
+type UniversalAuthCredentials struct {
+	// +kubebuilder:validation:Required
+	ClientID esmeta.SecretKeySelector `json:"clientId"`
+	// +kubebuilder:validation:Required
+	ClientSecret esmeta.SecretKeySelector `json:"clientSecret"`
+}
+
+// VaultAppRole authenticates with Vault using the App Role auth mechanism,
+// with the role and secret stored in a Kubernetes Secret resource.
+type VaultAppRole struct {
+	// Path where the App Role authentication backend is mounted
+	// in Vault, e.g: "approle"
+	// +kubebuilder:default=approle
+	Path string `json:"path"`
+
+	// RoleID configured in the App Role authentication backend when setting
+	// up the authentication backend in Vault.
+	//+optional
+	RoleID string `json:"roleId,omitempty"`
+
+	// Reference to a key in a Secret that contains the App Role ID used
+	// to authenticate with Vault.
+	// The `key` field must be specified and denotes which entry within the Secret
+	// resource is used as the app role id.
+	//+optional
+	RoleRef *esmeta.SecretKeySelector `json:"roleRef,omitempty"`
+
+	// Reference to a key in a Secret that contains the App Role secret used
+	// to authenticate with Vault.
+	// The `key` field must be specified and denotes which entry within the Secret
+	// resource is used as the app role secret.
+	SecretRef esmeta.SecretKeySelector `json:"secretRef"`
+}
 // VaultAuth is the configuration used to authenticate with a Vault server.
 // Only one of `tokenSecretRef`, `appRole`,  `kubernetes`, `ldap`, `userPass`, `jwt` or `cert`
 // can be specified. A namespace to authenticate against can optionally be specified.
@@ -1210,50 +1468,158 @@ type VaultAuth struct {
 	UserPass *VaultUserPassAuth `json:"userPass,omitempty"`
 }
 
-// YandexLockboxAuth defines authentication configuration for the Yandex Lockbox provider.
-type YandexLockboxAuth struct {
-	// The authorized key used for authentication
+// VaultAwsAuthSecretRef holds secret references for AWS credentials
+// both AccessKeyID and SecretAccessKey must be defined in order to properly authenticate.
+type VaultAwsAuthSecretRef struct {
+	// The AccessKeyID is used for authentication
 	// +optional
-	AuthorizedKey esmeta.SecretKeySelector `json:"authorizedKeySecretRef,omitempty"`
+	AccessKeyID esmeta.SecretKeySelector `json:"accessKeyIDSecretRef,omitempty"`
+
+	// The SecretAccessKey is used for authentication
+	// +optional
+	SecretAccessKey esmeta.SecretKeySelector `json:"secretAccessKeySecretRef,omitempty"`
+
+	// The SessionToken used for authentication
+	// This must be defined if AccessKeyID and SecretAccessKey are temporary credentials
+	// see: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_temp_use-resources.html
+	// +optional
+	SessionToken *esmeta.SecretKeySelector `json:"sessionTokenSecretRef,omitempty"`
 }
 
-// YandexLockboxProvider configures a store to sync secrets using the Yandex Lockbox provider.
-type YandexLockboxProvider struct {
-	// Yandex.Cloud API endpoint (e.g. 'api.cloud.yandex.net:443')
+// VaultAwsJWTAuth Authenticate against AWS using service account tokens.
+type VaultAwsJWTAuth struct {
 	// +optional
-	APIEndpoint string `json:"apiEndpoint,omitempty"`
-
-	// Auth defines the information necessary to authenticate against Yandex Lockbox
-	Auth YandexLockboxAuth `json:"auth"`
-
-	// The provider for the CA bundle to use to validate Yandex.Cloud server certificate.
-	// +optional
-	CAProvider *YandexLockboxCAProvider `json:"caProvider,omitempty"`
+	ServiceAccountRef *esmeta.ServiceAccountSelector `json:"serviceAccountRef,omitempty"`
 }
 
-// FakeProvider configures a fake provider that returns static values.
-type FakeProvider struct {
-	Data []FakeProviderData `json:"data"`
+// VaultCertAuth authenticates with Vault using the JWT/OIDC authentication
+// method, with the role name and token stored in a Kubernetes Secret resource.
+type VaultCertAuth struct {
+	// ClientCert is a certificate to authenticate using the Cert Vault
+	// authentication method
+	// +optional
+	ClientCert esmeta.SecretKeySelector `json:"clientCert,omitempty"`
+
+	// SecretRef to a key in a Secret resource containing client private key to
+	// authenticate with Vault using the Cert authentication method
+	// +optional
+	SecretRef esmeta.SecretKeySelector `json:"secretRef,omitempty"`
+}
+// VaultClientTLS is the configuration used for client side related TLS communication,
+// when the Vault server requires mutual authentication.
+type VaultClientTLS struct {
+	// CertSecretRef is a certificate added to the transport layer
+	// when communicating with the Vault server.
+	// If no key for the Secret is specified, external-secret will default to 'tls.crt'.
+	// +optional
+	CertSecretRef *esmeta.SecretKeySelector `json:"certSecretRef,omitempty"`
+
+	// KeySecretRef to a key in a Secret resource containing client private key
+	// added to the transport layer when communicating with the Vault server.
+	// If no key for the Secret is specified, external-secret will default to 'tls.key'.
+	// +optional
+	KeySecretRef *esmeta.SecretKeySelector `json:"keySecretRef,omitempty"`
 }
 
-// ScalewayProviderSecretRef defines a reference to a secret containing credentials for the Scaleway provider.
-type ScalewayProviderSecretRef struct {
-
-	// Value can be specified directly to set a value without using a secret.
+// VaultIamAuth authenticates with Vault using the Vault's AWS IAM authentication method. Refer: https://developer.hashicorp.com/vault/docs/auth/aws
+type VaultIamAuth struct {
+	// Path where the AWS auth method is enabled in Vault, e.g: "aws"
 	// +optional
-	Value string `json:"value,omitempty"`
+	Path string `json:"path,omitempty"`
+	// AWS region
+	// +optional
+	Region string `json:"region,omitempty"`
+	// This is the AWS role to be assumed before talking to vault
+	// +optional
+	AWSIAMRole string `json:"role,omitempty"`
+	// Vault Role. In vault, a role describes an identity with a set of permissions, groups, or policies you want to attach a user of the secrets engine
+	Role string `json:"vaultRole"`
+	// AWS External ID set on assumed IAM roles
+	ExternalID string `json:"externalID,omitempty"`
+	// X-Vault-AWS-IAM-Server-ID is an additional header used by Vault IAM auth method to mitigate against different types of replay attacks. More details here: https://developer.hashicorp.com/vault/docs/auth/aws
+	// +optional
+	VaultAWSIAMServerID string `json:"vaultAwsIamServerID,omitempty"`
+	// Specify credentials in a Secret object
+	// +optional
+	SecretRef *VaultAwsAuthSecretRef `json:"secretRef,omitempty"`
+	// Specify a service account with IRSA enabled
+	// +optional
+	JWTAuth *VaultAwsJWTAuth `json:"jwt,omitempty"`
+}
+// VaultJwtAuth authenticates with Vault using the JWT/OIDC authentication
+// method, with the role name and a token stored in a Kubernetes Secret resource or
+// a Kubernetes service account token retrieved via `TokenRequest`.
+type VaultJwtAuth struct {
+	// Path where the JWT authentication backend is mounted
+	// in Vault, e.g: "jwt"
+	// +kubebuilder:default=jwt
+	Path string `json:"path"`
 
-	// SecretRef references a key in a secret that will be used as value.
+	// Role is a JWT role to authenticate using the JWT/OIDC Vault
+	// authentication method
+	// +optional
+	Role string `json:"role,omitempty"`
+
+	// Optional SecretRef that refers to a key in a Secret resource containing JWT token to
+	// authenticate with Vault using the JWT/OIDC authentication method.
 	// +optional
 	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
-}
 
-// PreviderAuth contains a secretRef for credentials.
-type PreviderAuth struct {
+	// Optional ServiceAccountToken specifies the Kubernetes service account for which to request
+	// a token for with the `TokenRequest` API.
 	// +optional
-	SecretRef *PreviderAuthSecretRef `json:"secretRef,omitempty"`
+	KubernetesServiceAccountToken *VaultKubernetesServiceAccountTokenAuth `json:"kubernetesServiceAccountToken,omitempty"`
+}
+// VaultKVStoreVersion defines the version of the KV store in Vault.
+type VaultKVStoreVersion string
+
+// VaultKubernetesAuth authenticates against Vault using a Kubernetes ServiceAccount token stored in a Secret.
+type VaultKubernetesAuth struct {
+	// Path where the Kubernetes authentication backend is mounted in Vault, e.g:
+	// "kubernetes"
+	// +kubebuilder:default=kubernetes
+	Path string `json:"mountPath"`
+
+	// Optional service account field containing the name of a kubernetes ServiceAccount.
+	// If the service account is specified, the service account secret token JWT will be used
+	// for authenticating with Vault. If the service account selector is not supplied,
+	// the secretRef will be used instead.
+	// +optional
+	ServiceAccountRef *esmeta.ServiceAccountSelector `json:"serviceAccountRef,omitempty"`
+
+	// Optional secret field containing a Kubernetes ServiceAccount JWT used
+	// for authenticating with Vault. If a name is specified without a key,
+	// `token` is the default. If one is not specified, the one bound to
+	// the controller will be used.
+	// +optional
+	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
+
+	// A required field containing the Vault Role to assume. A Role binds a
+	// Kubernetes ServiceAccount with a set of Vault policies.
+	Role string `json:"role"`
 }
 
+// VaultKubernetesServiceAccountTokenAuth authenticates with Vault using a temporary
+// Kubernetes service account token retrieved by the `TokenRequest` API.
+type VaultKubernetesServiceAccountTokenAuth struct {
+	// Service account field containing the name of a kubernetes ServiceAccount.
+	ServiceAccountRef esmeta.ServiceAccountSelector `json:"serviceAccountRef"`
+
+	// Optional audiences field that will be used to request a temporary Kubernetes service
+	// account token for the service account referenced by `serviceAccountRef`.
+	// Defaults to a single audience `vault` it not specified.
+	// Deprecated: use serviceAccountRef.Audiences instead
+	// +optional
+	Audiences *[]string `json:"audiences,omitempty"`
+
+	// Optional expiration time in seconds that will be used to request a temporary
+	// Kubernetes service account token for the service account referenced by
+	// `serviceAccountRef`.
+	// Deprecated: this will be removed in the future.
+	// Defaults to 10 minutes.
+	// +optional
+	ExpirationSeconds *int64 `json:"expirationSeconds,omitempty"`
+}
 // VaultLdapAuth authenticates with Vault using the LDAP authentication method,
 // with the username and password stored in a Kubernetes Secret resource.
 type VaultLdapAuth struct {
@@ -1272,43 +1638,6 @@ type VaultLdapAuth struct {
 	// +optional
 	SecretRef esmeta.SecretKeySelector `json:"secretRef,omitempty"`
 }
-
-// PasswordDepotProvider configures a store to sync secrets with a Password Depot instance.
-type PasswordDepotProvider struct {
-	// URL configures the Password Depot instance URL.
-	Host string `json:"host"`
-
-	// Database to use as source
-	Database string `json:"database"`
-
-	// Auth configures how secret-manager authenticates with a Password Depot instance.
-	Auth PasswordDepotAuth `json:"auth"`
-}
-
-// ConjurJWT defines authentication using a JWT service account token.
-type ConjurJWT struct {
-	// Account is the Conjur organization account name.
-	Account string `json:"account"`
-
-	// The conjur authn jwt webservice id
-	ServiceID string `json:"serviceID"`
-
-	// Optional HostID for JWT authentication. This may be used depending
-	// on how the Conjur JWT authenticator policy is configured.
-	// +optional
-	HostID string `json:"hostId"`
-
-	// Optional SecretRef that refers to a key in a Secret resource containing JWT token to
-	// authenticate with Conjur using the JWT authentication method.
-	// +optional
-	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
-
-	// Optional ServiceAccountRef specifies the Kubernetes service account for which to request
-	// a token for with the `TokenRequest` API.
-	// +optional
-	ServiceAccountRef *esmeta.ServiceAccountSelector `json:"serviceAccountRef,omitempty"`
-}
-
 // VaultProvider configures a store to sync secrets using a HashiCorp Vault KV backend.
 type VaultProvider struct {
 	// Auth configures how secret-manager authenticates with the Vault server.
@@ -1375,6 +1704,25 @@ type VaultProvider struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
+// VaultUserPassAuth authenticates with Vault using UserPass authentication method,
+// with the username and password stored in a Kubernetes Secret resource.
+type VaultUserPassAuth struct {
+	// Path where the UserPassword authentication backend is mounted
+	// in Vault, e.g: "userpass"
+	// +kubebuilder:default=userpass
+	Path string `json:"path"`
+
+	// Username is a username used to authenticate using the UserPass Vault
+	// authentication method
+	Username string `json:"username"`
+
+	// SecretRef to a key in a Secret resource containing password for the
+	// user used to authenticate with Vault using the UserPass authentication
+	// method
+	// +optional
+	SecretRef esmeta.SecretKeySelector `json:"secretRef,omitempty"`
+}
+
 // WebhookCAProvider defines a location to fetch the certificate for the webhook provider.
 type WebhookCAProvider struct {
 	// The type of provider to use such as "Secret", or "ConfigMap".
@@ -1401,169 +1749,52 @@ type WebhookCAProvider struct {
 	// +kubebuilder:validation:Pattern:=^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
 	Namespace *string `json:"namespace,omitempty"`
 }
+// WebhookCAProviderType defines the type of provider to use for CA certificates with Webhook providers.
+type WebhookCAProviderType string
+// WebhookProvider configures a store to sync secrets from simple web APIs.
+type WebhookProvider struct {
+	// Webhook Method
+	// +optional, default GET
+	Method string `json:"method,omitempty"`
 
-// AkeylessAuth defines methods of authentication with Akeyless Vault.
-type AkeylessAuth struct {
+	// Webhook url to call
+	URL string `json:"url"`
 
-	// Reference to a Secret that contains the details
-	// to authenticate with Akeyless.
+	// Headers
 	// +optional
-	SecretRef AkeylessAuthSecretRef `json:"secretRef,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 
-	// Kubernetes authenticates with Akeyless by passing the ServiceAccount
-	// token stored in the named Secret resource.
+	// Auth specifies a authorization protocol. Only one protocol may be set.
 	// +optional
-	KubernetesAuth *AkeylessKubernetesAuth `json:"kubernetesAuth,omitempty"`
+	Auth *AuthorizationProtocol `json:"auth,omitempty"`
+
+	// Body
+	// +optional
+	Body string `json:"body,omitempty"`
+
+	// Timeout
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+
+	// Result formatting
+	Result WebhookResult `json:"result"`
+
+	// Secrets to fill in templates
+	// These secrets will be passed to the templating function as key value pairs under the given name
+	// +optional
+	Secrets []WebhookSecret `json:"secrets,omitempty"`
+
+	// PEM encoded CA bundle used to validate webhook server certificate. Only used
+	// if the Server URL is using HTTPS protocol. This parameter is ignored for
+	// plain HTTP protocol connection. If not set the system root certificates
+	// are used to validate the TLS connection.
+	// +optional
+	CABundle []byte `json:"caBundle,omitempty"`
+
+	// The provider for the CA bundle to use to validate webhook server certificate.
+	// +optional
+	CAProvider *WebhookCAProvider `json:"caProvider,omitempty"`
 }
-
-// GCPWorkloadIdentity defines configuration for using GCP Workload Identity authentication.
-type GCPWorkloadIdentity struct {
-	// +kubebuilder:validation:Required
-	ServiceAccountRef esmeta.ServiceAccountSelector `json:"serviceAccountRef"`
-	// ClusterLocation is the location of the cluster
-	// If not specified, it fetches information from the metadata server
-	// +optional
-	ClusterLocation string `json:"clusterLocation,omitempty"`
-	// ClusterName is the name of the cluster
-	// If not specified, it fetches information from the metadata server
-	// +optional
-	ClusterName string `json:"clusterName,omitempty"`
-	// ClusterProjectID is the project ID of the cluster
-	// If not specified, it fetches information from the metadata server
-	// +optional
-	ClusterProjectID string `json:"clusterProjectID,omitempty"`
-}
-
-// OraclePrincipalType defines the type of principal used for authentication to Oracle Vault.
-// +kubebuilder:validation:Enum="";UserPrincipal;InstancePrincipal;Workload
-type OraclePrincipalType string
-
-// ChefAuth contains a secretRef for credentials.
-type ChefAuth struct {
-	SecretRef ChefAuthSecretRef `json:"secretRef"`
-}
-
-// VaultUserPassAuth authenticates with Vault using UserPass authentication method,
-// with the username and password stored in a Kubernetes Secret resource.
-type VaultUserPassAuth struct {
-	// Path where the UserPassword authentication backend is mounted
-	// in Vault, e.g: "userpass"
-	// +kubebuilder:default=userpass
-	Path string `json:"path"`
-
-	// Username is a username used to authenticate using the UserPass Vault
-	// authentication method
-	Username string `json:"username"`
-
-	// SecretRef to a key in a Secret resource containing password for the
-	// user used to authenticate with Vault using the UserPass authentication
-	// method
-	// +optional
-	SecretRef esmeta.SecretKeySelector `json:"secretRef,omitempty"`
-}
-
-// ConjurAPIKey defines authentication using a Conjur API key.
-type ConjurAPIKey struct {
-	// Account is the Conjur organization account name.
-	Account string `json:"account"`
-
-	// A reference to a specific 'key' containing the Conjur username
-	// within a Secret resource. In some instances, `key` is a required field.
-	UserRef *esmeta.SecretKeySelector `json:"userRef"`
-
-	// A reference to a specific 'key' containing the Conjur API key
-	// within a Secret resource. In some instances, `key` is a required field.
-	APIKeyRef *esmeta.SecretKeySelector `json:"apiKeyRef"`
-}
-
-// AzureKVProvider configures a store to sync secrets using Azure Key Vault.
-type AzureKVProvider struct {
-	// Auth type defines how to authenticate to the keyvault service.
-	// Valid values are:
-	// - "ServicePrincipal" (default): Using a service principal (tenantId, clientId, clientSecret)
-	// - "ManagedIdentity": Using Managed Identity assigned to the pod (see aad-pod-identity)
-	// +optional
-	// +kubebuilder:default=ServicePrincipal
-	AuthType *AzureAuthType `json:"authType,omitempty"`
-
-	// Vault Url from which the secrets to be fetched from.
-	VaultURL *string `json:"vaultUrl"`
-
-	// TenantID configures the Azure Tenant to send requests to. Required for ServicePrincipal auth type. Optional for WorkloadIdentity.
-	// +optional
-	TenantID *string `json:"tenantId,omitempty"`
-
-	// EnvironmentType specifies the Azure cloud environment endpoints to use for
-	// connecting and authenticating with Azure. By default it points to the public cloud AAD endpoint.
-	// The following endpoints are available, also see here: https://github.com/Azure/go-autorest/blob/main/autorest/azure/environments.go#L152
-	// PublicCloud, USGovernmentCloud, ChinaCloud, GermanCloud
-	// +kubebuilder:default=PublicCloud
-	EnvironmentType AzureEnvironmentType `json:"environmentType,omitempty"`
-
-	// Auth configures how the operator authenticates with Azure. Required for ServicePrincipal auth type. Optional for WorkloadIdentity.
-	// +optional
-	AuthSecretRef *AzureKVAuth `json:"authSecretRef,omitempty"`
-
-	// ServiceAccountRef specified the service account
-	// that should be used when authenticating with WorkloadIdentity.
-	// +optional
-	ServiceAccountRef *smmeta.ServiceAccountSelector `json:"serviceAccountRef,omitempty"`
-
-	// If multiple Managed Identity is assigned to the pod, you can select the one to be used
-	// +optional
-	IdentityID *string `json:"identityId,omitempty"`
-}
-
-// SecretsManager defines how the provider behaves when interacting with AWS
-// SecretsManager. Some of these settings are only applicable to controlling how
-// secrets are deleted, and hence only apply to PushSecret (and only when
-// deletionPolicy is set to Delete).
-type SecretsManager struct {
-	// Specifies whether to delete the secret without any recovery window. You
-	// can't use both this parameter and RecoveryWindowInDays in the same call.
-	// If you don't use either, then by default Secrets Manager uses a 30 day
-	// recovery window.
-	// see: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_DeleteSecret.html#SecretsManager-DeleteSecret-request-ForceDeleteWithoutRecovery
-	// +optional
-	ForceDeleteWithoutRecovery bool `json:"forceDeleteWithoutRecovery,omitempty"`
-	// The number of days from 7 to 30 that Secrets Manager waits before
-	// permanently deleting the secret. You can't use both this parameter and
-	// ForceDeleteWithoutRecovery in the same call. If you don't use either,
-	// then by default Secrets Manager uses a 30 day recovery window.
-	// see: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_DeleteSecret.html#SecretsManager-DeleteSecret-request-RecoveryWindowInDays
-	// +optional
-	RecoveryWindowInDays int64 `json:"recoveryWindowInDays,omitempty"`
-}
-
-// DelineaProviderSecretRef defines a reference to a secret containing credentials for the Delinea provider.
-type DelineaProviderSecretRef struct {
-
-	// Value can be specified directly to set a value without using a secret.
-	// +optional
-	Value string `json:"value,omitempty"`
-
-	// SecretRef references a key in a secret that will be used as value.
-	// +optional
-	SecretRef *esmeta.SecretKeySelector `json:"secretRef,omitempty"`
-}
-
-// TokenAuth defines token-based authentication for the Kubernetes provider.
-type TokenAuth struct {
-	BearerToken esmeta.SecretKeySelector `json:"bearerToken,omitempty"`
-}
-
-// ChefAuthSecretRef holds secret references for chef server login credentials.
-type ChefAuthSecretRef struct {
-	// SecretKey is the Signing Key in PEM format, used for authentication.
-	SecretKey esmeta.SecretKeySelector `json:"privateKeySecretRef"`
-}
-
-// AzureAuthType describes how to authenticate to the Azure Keyvault.
-// Only one of the following auth types may be specified.
-// If none of the following auth type is specified, the default one
-// is ServicePrincipal.
-// +kubebuilder:validation:Enum=ServicePrincipal;ManagedIdentity;WorkloadIdentity
-type AzureAuthType string
 
 // WebhookResult defines how to extract and format the result from the webhook response.
 type WebhookResult struct {
@@ -1572,97 +1803,13 @@ type WebhookResult struct {
 	JSONPath string `json:"jsonPath,omitempty"`
 }
 
-// BeyondtrustAuth configures authentication for BeyondTrust Password Safe.
-type BeyondtrustAuth struct {
-	// APIKey If not provided then ClientID/ClientSecret become required.
-	APIKey *BeyondTrustProviderSecretRef `json:"apiKey,omitempty"`
-	// ClientID is the API OAuth Client ID.
-	ClientID *BeyondTrustProviderSecretRef `json:"clientId,omitempty"`
-	// ClientSecret is the API OAuth Client Secret.
-	ClientSecret *BeyondTrustProviderSecretRef `json:"clientSecret,omitempty"`
-	// Certificate (cert.pem) for use when authenticating with an OAuth client Id using a Client Certificate.
-	Certificate *BeyondTrustProviderSecretRef `json:"certificate,omitempty"`
-	// Certificate private key (key.pem). For use when authenticating with an OAuth client Id
-	CertificateKey *BeyondTrustProviderSecretRef `json:"certificateKey,omitempty"`
-}
+// WebhookSecret defines a secret to be used in webhook templates.
+type WebhookSecret struct {
+	// Name of this secret in templates
+	Name string `json:"name"`
 
-// AWSAuthSecretRef holds secret references for AWS credentials
-// both AccessKeyID and SecretAccessKey must be defined in order to properly authenticate.
-type AWSAuthSecretRef struct {
-	// The AccessKeyID is used for authentication
-	AccessKeyID esmeta.SecretKeySelector `json:"accessKeyIDSecretRef,omitempty"`
-
-	// The SecretAccessKey is used for authentication
-	SecretAccessKey esmeta.SecretKeySelector `json:"secretAccessKeySecretRef,omitempty"`
-
-	// The SessionToken used for authentication
-	// This must be defined if AccessKeyID and SecretAccessKey are temporary credentials
-	// see: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_temp_use-resources.html
-	// +Optional
-	SessionToken *esmeta.SecretKeySelector `json:"sessionTokenSecretRef,omitempty"`
-}
-
-// ClusterSecretStoreCondition describes a condition by which to choose namespaces to process ExternalSecrets in
-// for a ClusterSecretStore instance.
-type ClusterSecretStoreCondition struct {
-	// Choose namespace using a labelSelector
-	// +optional
-	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
-
-	// Choose namespaces by name
-	// +optional
-	// +kubebuilder:validation:items:MinLength:=1
-	// +kubebuilder:validation:items:MaxLength:=63
-	// +kubebuilder:validation:items:Pattern:=^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
-	Namespaces []string `json:"namespaces,omitempty"`
-
-	// Choose namespaces by using regex matching
-	// +optional
-	NamespaceRegexes []string `json:"namespaceRegexes,omitempty"`
-}
-
-// AlibabaProvider configures a store to sync secrets using the Alibaba Secret Manager provider.
-type AlibabaProvider struct {
-	Auth AlibabaAuth `json:"auth"`
-	// Alibaba Region to be used for the provider
-	RegionID string `json:"regionID"`
-}
-
-// DelineaProvider defines configuration for the Delinea DevOps Secrets Vault provider.
-// See https://github.com/DelineaXPM/dsv-sdk-go/blob/main/vault/vault.go.
-type DelineaProvider struct {
-
-	// ClientID is the non-secret part of the credential.
-	ClientID *DelineaProviderSecretRef `json:"clientId"`
-
-	// ClientSecret is the secret part of the credential.
-	ClientSecret *DelineaProviderSecretRef `json:"clientSecret"`
-
-	// Tenant is the chosen hostname / site name.
-	Tenant string `json:"tenant"`
-
-	// URLTemplate
-	// If unset, defaults to "https://%s.secretsvaultcloud.%s/v1/%s%s".
-	// +optional
-	URLTemplate string `json:"urlTemplate,omitempty"`
-
-	// TLD is based on the server location that was chosen during provisioning.
-	// If unset, defaults to "com".
-	// +optional
-	TLD string `json:"tld,omitempty"`
-}
-
-// OracleAuth defines authentication configuration for the Oracle Vault provider.
-type OracleAuth struct {
-
-	// Tenancy is the tenancy OCID where user is located.
-	Tenancy string `json:"tenancy"`
-
-	// User is an access OCID specific to the account.
-	User string `json:"user"`
-
-	// SecretRef to pass through sensitive information.
-	SecretRef OracleSecretRef `json:"secretRef"`
+	// Secret ref to fill in credentials
+	SecretRef esmeta.SecretKeySelector `json:"secretRef"`
 }
 
 // YandexCertificateManagerAuth defines authentication configuration for the Yandex Certificate Manager provider.
@@ -1672,149 +1819,9 @@ type YandexCertificateManagerAuth struct {
 	AuthorizedKey esmeta.SecretKeySelector `json:"authorizedKeySecretRef,omitempty"`
 }
 
-/*
-SenhaseguraModuleType enum defines senhasegura target module to fetch secrets
-+kubebuilder:validation:Enum=DSM
-*/
-type SenhaseguraModuleType string
-
-// PreviderProvider configures a store to sync secrets using the Previder Secret Manager provider.
-type PreviderProvider struct {
-	Auth PreviderAuth `json:"auth"`
-	// +optional
-	BaseURI string `json:"baseUri,omitempty"`
-}
-
-// AlibabaAuth contains a secretRef for credentials.
-type AlibabaAuth struct {
-	// +optional
-	SecretRef *AlibabaAuthSecretRef `json:"secretRef,omitempty"`
-	// +optional
-	RRSAAuth *AlibabaRRSAAuth `json:"rrsa,omitempty"`
-}
-
-// KubernetesProvider configures a store to sync secrets with a Kubernetes instance.
-type KubernetesProvider struct {
-	// configures the Kubernetes server Address.
-	// +optional
-	Server KubernetesServer `json:"server,omitempty"`
-
-	// Auth configures how secret-manager authenticates with a Kubernetes instance.
-	// +optional
-	Auth KubernetesAuth `json:"auth"`
-
-	// A reference to a secret that contains the auth information.
-	// +optional
-	AuthRef *esmeta.SecretKeySelector `json:"authRef,omitempty"`
-
-	// Remote namespace to fetch the secrets from
-	// +optional
-	// +kubebuilder:default=default
-	// +kubebuilder:validation:MinLength:=1
-	// +kubebuilder:validation:MaxLength:=63
-	// +kubebuilder:validation:Pattern:=^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
-	RemoteNamespace string `json:"remoteNamespace,omitempty"`
-}
-
-// ConjurProvider defines configuration for the CyberArk Conjur provider.
-type ConjurProvider struct {
-	// URL is the endpoint of the Conjur instance.
-	URL string `json:"url"`
-
-	// CABundle is a PEM encoded CA bundle that will be used to validate the Conjur server certificate.
-	// +optional
-	CABundle string `json:"caBundle,omitempty"`
-
-	// Used to provide custom certificate authority (CA) certificates
-	// for a secret store. The CAProvider points to a Secret or ConfigMap resource
-	// that contains a PEM-encoded certificate.
-	// +optional
-	CAProvider *CAProvider `json:"caProvider,omitempty"`
-
-	// Defines authentication settings for connecting to Conjur.
-	Auth ConjurAuth `json:"auth"`
-}
-
-// SecretServerProvider defines configuration for the Delinea Secret Server provider.
-// See https://github.com/DelineaXPM/tss-sdk-go/blob/main/server/server.go.
-type SecretServerProvider struct {
-
-	// Username is the secret server account username.
-	// +required
-	Username *SecretServerProviderRef `json:"username"`
-
-	// Password is the secret server account password.
-	// +required
-	Password *SecretServerProviderRef `json:"password"`
-
-	// ServerURL
-	// URL to your secret server installation
-	// +required
-	ServerURL string `json:"serverURL"`
-}
-
-// CSMAuth contains a secretRef for credentials.
-type CSMAuth struct {
-	// +optional
-	SecretRef *CSMAuthSecretRef `json:"secretRef,omitempty"`
-}
-
-// OnboardbaseProvider configures a store to sync secrets using the Onboardbase provider.
-// Project and Config are required if not using a Service Token.
-type OnboardbaseProvider struct {
-	// Auth configures how the Operator authenticates with the Onboardbase API
-	Auth *OnboardbaseAuthSecretRef `json:"auth"`
-
-	// APIHost use this to configure the host url for the API for selfhosted installation, default is https://public.onboardbase.com/api/v1/
-	// +kubebuilder:default:="https://public.onboardbase.com/api/v1/"
-	APIHost string `json:"apiHost"`
-
-	// Project is an onboardbase project that the secrets should be pulled from
-	// +kubebuilder:validation:Required
-	// +kubebuilder:default:="development"
-	Project string `json:"project"`
-	// Environment is the name of an environmnent within a project to pull the secrets from
-	// +kubebuilder:validation:Required
-	// +kubebuilder:default:="development"
-	Environment string `json:"environment"`
-}
-
-// VaultAwsAuthSecretRef holds secret references for AWS credentials
-// both AccessKeyID and SecretAccessKey must be defined in order to properly authenticate.
-type VaultAwsAuthSecretRef struct {
-	// The AccessKeyID is used for authentication
-	// +optional
-	AccessKeyID esmeta.SecretKeySelector `json:"accessKeyIDSecretRef,omitempty"`
-
-	// The SecretAccessKey is used for authentication
-	// +optional
-	SecretAccessKey esmeta.SecretKeySelector `json:"secretAccessKeySecretRef,omitempty"`
-
-	// The SessionToken used for authentication
-	// This must be defined if AccessKeyID and SecretAccessKey are temporary credentials
-	// see: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_temp_use-resources.html
-	// +optional
-	SessionToken *esmeta.SecretKeySelector `json:"sessionTokenSecretRef,omitempty"`
-}
-
-// KeeperSecurityProvider Configures a store to sync secrets using Keeper Security.
-type KeeperSecurityProvider struct {
-	Auth     smmeta.SecretKeySelector `json:"authRef"`
-	FolderID string                   `json:"folderID"`
-}
-
-// OnePasswordAuth contains a secretRef for credentials.
-type OnePasswordAuth struct {
-	SecretRef *OnePasswordAuthSecretRef `json:"secretRef"`
-}
-
-// IBMProvider configures a store to sync secrets using a IBM Cloud Secrets Manager backend.
-type IBMProvider struct {
-	// Auth configures how secret-manager authenticates with the IBM secrets manager.
-	Auth IBMAuth `json:"auth"`
-
-	// ServiceURL is the Endpoint URL that is specific to the Secrets Manager service instance
-	ServiceURL *string `json:"serviceUrl,omitempty"`
+// YandexCertificateManagerCAProvider defines CA certificate configuration for Yandex Certificate Manager.
+type YandexCertificateManagerCAProvider struct {
+	Certificate esmeta.SecretKeySelector `json:"certSecretRef,omitempty"`
 }
 
 // YandexCertificateManagerProvider configures a store to sync secrets using the Yandex Certificate Manager provider.
@@ -1831,66 +1838,28 @@ type YandexCertificateManagerProvider struct {
 	CAProvider *YandexCertificateManagerCAProvider `json:"caProvider,omitempty"`
 }
 
-// InfisicalAuth defines the authentication methods for the Infisical provider.
-type InfisicalAuth struct {
+// YandexLockboxAuth defines authentication configuration for the Yandex Lockbox provider.
+type YandexLockboxAuth struct {
+	// The authorized key used for authentication
 	// +optional
-	UniversalAuthCredentials *UniversalAuthCredentials `json:"universalAuthCredentials,omitempty"`
+	AuthorizedKey esmeta.SecretKeySelector `json:"authorizedKeySecretRef,omitempty"`
 }
 
-// MachineIdentityScopeInWorkspace defines the scope of a machine identity in an Infisical workspace.
-type MachineIdentityScopeInWorkspace struct {
-	// SecretsPath specifies the path to the secrets within the workspace. Defaults to "/" if not provided.
-	// +kubebuilder:default="/"
-	// +optional
-	SecretsPath string `json:"secretsPath,omitempty"`
-	// Recursive indicates whether the secrets should be fetched recursively. Defaults to false if not provided.
-	// +kubebuilder:default=false
-	// +optional
-	Recursive bool `json:"recursive,omitempty"`
-	// EnvironmentSlug is the required slug identifier for the environment.
-	// +kubebuilder:validation:Required
-	EnvironmentSlug string `json:"environmentSlug"`
-	// ProjectSlug is the required slug identifier for the project.
-	// +kubebuilder:validation:Required
-	ProjectSlug string `json:"projectSlug"`
-	// ExpandSecretReferences indicates whether secret references should be expanded. Defaults to true if not provided.
-	// +kubebuilder:default=true
-	// +optional
-	ExpandSecretReferences bool `json:"expandSecretReferences,omitempty"`
+// YandexLockboxCAProvider defines CA certificate configuration for Yandex Lockbox.
+type YandexLockboxCAProvider struct {
+	Certificate esmeta.SecretKeySelector `json:"certSecretRef,omitempty"`
 }
 
-// CAProviderType defines the type of provider to use for CA certificates.
-type CAProviderType string
+// YandexLockboxProvider configures a store to sync secrets using the Yandex Lockbox provider.
+type YandexLockboxProvider struct {
+	// Yandex.Cloud API endpoint (e.g. 'api.cloud.yandex.net:443')
+	// +optional
+	APIEndpoint string `json:"apiEndpoint,omitempty"`
 
-// VaultIamAuth authenticates with Vault using the Vault's AWS IAM authentication method. Refer: https://developer.hashicorp.com/vault/docs/auth/aws
-type VaultIamAuth struct {
-	// Path where the AWS auth method is enabled in Vault, e.g: "aws"
-	// +optional
-	Path string `json:"path,omitempty"`
-	// AWS region
-	// +optional
-	Region string `json:"region,omitempty"`
-	// This is the AWS role to be assumed before talking to vault
-	// +optional
-	AWSIAMRole string `json:"role,omitempty"`
-	// Vault Role. In vault, a role describes an identity with a set of permissions, groups, or policies you want to attach a user of the secrets engine
-	Role string `json:"vaultRole"`
-	// AWS External ID set on assumed IAM roles
-	ExternalID string `json:"externalID,omitempty"`
-	// X-Vault-AWS-IAM-Server-ID is an additional header used by Vault IAM auth method to mitigate against different types of replay attacks. More details here: https://developer.hashicorp.com/vault/docs/auth/aws
-	// +optional
-	VaultAWSIAMServerID string `json:"vaultAwsIamServerID,omitempty"`
-	// Specify credentials in a Secret object
-	// +optional
-	SecretRef *VaultAwsAuthSecretRef `json:"secretRef,omitempty"`
-	// Specify a service account with IRSA enabled
-	// +optional
-	JWTAuth *VaultAwsJWTAuth `json:"jwt,omitempty"`
-}
+	// Auth defines the information necessary to authenticate against Yandex Lockbox
+	Auth YandexLockboxAuth `json:"auth"`
 
-// Device42SecretRef defines a reference to a secret containing credentials for the Device42 provider.
-type Device42SecretRef struct {
-	// Username / Password is used for authentication.
+	// The provider for the CA bundle to use to validate Yandex.Cloud server certificate.
 	// +optional
-	Credentials esmeta.SecretKeySelector `json:"credentials,omitempty"`
+	CAProvider *YandexLockboxCAProvider `json:"caProvider,omitempty"`
 }

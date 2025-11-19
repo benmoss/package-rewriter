@@ -7,6 +7,104 @@ import (
 	"time"
 )
 
+// Duration is a wrapper around time.Duration which supports correct
+// marshaling to YAML and JSON. In particular, it marshals into strings, which
+// can be used as map keys in json.
+type Duration struct {
+	time.Duration `protobuf:"varint,1,opt,name=duration,casttype=time.Duration"`
+}
+
+// FieldsV1 stores a set of fields in a data structure like a Trie, in JSON format.
+//
+// Each key is either a '.' representing the field itself, and will always map to an empty set,
+// or a string representing a sub-field or item. The string will follow one of these four formats:
+// 'f:<name>', where <name> is the name of a field in a struct, or key in a map
+// 'v:<value>', where <value> is the exact json formatted value of a list item
+// 'i:<index>', where <index> is position of a item in a list
+// 'k:<keys>', where <keys> is a map of  a list item's key fields to their unique values
+// If a key maps to an empty Fields value, the field that key represents is part of the set.
+//
+// The exact format is defined in sigs.k8s.io/structured-merge-diff
+// +protobuf.options.(gogoproto.goproto_stringer)=false
+type FieldsV1 struct {
+	// Raw is the underlying serialization of this object.
+	Raw []byte `json:"-" protobuf:"bytes,1,opt,name=Raw"`
+}
+// A label selector is a label query over a set of resources. The result of matchLabels and
+// matchExpressions are ANDed. An empty label selector matches all objects. A null
+// label selector matches no objects.
+// +structType=atomic
+type LabelSelector struct {
+	// matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+	// map is equivalent to an element of matchExpressions, whose key field is "key", the
+	// operator is "In", and the values array contains only "value". The requirements are ANDed.
+	// +optional
+	MatchLabels map[string]string `json:"matchLabels,omitempty" protobuf:"bytes,1,rep,name=matchLabels"`
+	// matchExpressions is a list of label selector requirements. The requirements are ANDed.
+	// +optional
+	// +listType=atomic
+	MatchExpressions []LabelSelectorRequirement `json:"matchExpressions,omitempty" protobuf:"bytes,2,rep,name=matchExpressions"`
+}
+
+// A label selector operator is the set of operators that can be used in a selector requirement.
+type LabelSelectorOperator string
+// A label selector requirement is a selector that contains values, a key, and an operator that
+// relates the key and values.
+type LabelSelectorRequirement struct {
+	// key is the label key that the selector applies to.
+	Key string `json:"key" protobuf:"bytes,1,opt,name=key"`
+	// operator represents a key's relationship to a set of values.
+	// Valid operators are In, NotIn, Exists and DoesNotExist.
+	Operator LabelSelectorOperator `json:"operator" protobuf:"bytes,2,opt,name=operator,casttype=LabelSelectorOperator"`
+	// values is an array of string values. If the operator is In or NotIn,
+	// the values array must be non-empty. If the operator is Exists or DoesNotExist,
+	// the values array must be empty. This array is replaced during a strategic
+	// merge patch.
+	// +optional
+	// +listType=atomic
+	Values []string `json:"values,omitempty" protobuf:"bytes,3,rep,name=values"`
+}
+
+// ManagedFieldsEntry is a workflow-id, a FieldSet and the group version of the resource
+// that the fieldset applies to.
+type ManagedFieldsEntry struct {
+	// Manager is an identifier of the workflow managing these fields.
+	Manager string `json:"manager,omitempty" protobuf:"bytes,1,opt,name=manager"`
+	// Operation is the type of operation which lead to this ManagedFieldsEntry being created.
+	// The only valid values for this field are 'Apply' and 'Update'.
+	Operation ManagedFieldsOperationType `json:"operation,omitempty" protobuf:"bytes,2,opt,name=operation,casttype=ManagedFieldsOperationType"`
+	// APIVersion defines the version of this resource that this field set
+	// applies to. The format is "group/version" just like the top-level
+	// APIVersion field. It is necessary to track the version of a field
+	// set because it cannot be automatically converted.
+	APIVersion string `json:"apiVersion,omitempty" protobuf:"bytes,3,opt,name=apiVersion"`
+	// Time is the timestamp of when the ManagedFields entry was added. The
+	// timestamp will also be updated if a field is added, the manager
+	// changes any of the owned fields value or removes a field. The
+	// timestamp does not update when a field is removed from the entry
+	// because another manager took it over.
+	// +optional
+	Time *Time `json:"time,omitempty" protobuf:"bytes,4,opt,name=time"`
+
+	// FieldsType is the discriminator for the different fields format and version.
+	// There is currently only one possible value: "FieldsV1"
+	FieldsType string `json:"fieldsType,omitempty" protobuf:"bytes,6,opt,name=fieldsType"`
+	// FieldsV1 holds the first JSON version format as described in the "FieldsV1" type.
+	// +optional
+	FieldsV1 *FieldsV1 `json:"fieldsV1,omitempty" protobuf:"bytes,7,opt,name=fieldsV1"`
+
+	// Subresource is the name of the subresource used to update that object, or
+	// empty string if the object was updated through the main resource. The
+	// value of this field is used to distinguish between managers, even if they
+	// share the same name. For example, a status update will be distinct from a
+	// regular update using the same manager name.
+	// Note that the APIVersion field is not related to the Subresource field and
+	// it always corresponds to the version of the main resource.
+	Subresource string `json:"subresource,omitempty" protobuf:"bytes,8,opt,name=subresource"`
+}
+
+// ManagedFieldsOperationType is the type of operation which lead to a ManagedFieldsEntry being created.
+type ManagedFieldsOperationType string
 // ObjectMeta is metadata that all persisted resources must have, which includes all objects
 // users must create.
 type ObjectMeta struct {
@@ -172,17 +270,6 @@ type ObjectMeta struct {
 	ManagedFields []ManagedFieldsEntry `json:"managedFields,omitempty" protobuf:"bytes,17,rep,name=managedFields"`
 }
 
-// Time is a wrapper around time.Time which supports correct
-// marshaling to YAML and JSON.  Wrappers are provided for many
-// of the factory methods that the time package offers.
-//
-// +protobuf.options.marshal=false
-// +protobuf.as=Timestamp
-// +protobuf.options.(gogoproto.goproto_stringer)=false
-type Time struct {
-	time.Time `protobuf:"-"`
-}
-
 // OwnerReference contains enough information to let you identify an owning
 // object. An owning object must be in the same namespace as the dependent, or
 // be cluster-scoped, so there is no namespace field.
@@ -214,44 +301,17 @@ type OwnerReference struct {
 	BlockOwnerDeletion *bool `json:"blockOwnerDeletion,omitempty" protobuf:"varint,7,opt,name=blockOwnerDeletion"`
 }
 
-// ManagedFieldsOperationType is the type of operation which lead to a ManagedFieldsEntry being created.
-type ManagedFieldsOperationType string
-
-// FieldsV1 stores a set of fields in a data structure like a Trie, in JSON format.
+// Time is a wrapper around time.Time which supports correct
+// marshaling to YAML and JSON.  Wrappers are provided for many
+// of the factory methods that the time package offers.
 //
-// Each key is either a '.' representing the field itself, and will always map to an empty set,
-// or a string representing a sub-field or item. The string will follow one of these four formats:
-// 'f:<name>', where <name> is the name of a field in a struct, or key in a map
-// 'v:<value>', where <value> is the exact json formatted value of a list item
-// 'i:<index>', where <index> is position of a item in a list
-// 'k:<keys>', where <keys> is a map of  a list item's key fields to their unique values
-// If a key maps to an empty Fields value, the field that key represents is part of the set.
-//
-// The exact format is defined in sigs.k8s.io/structured-merge-diff
+// +protobuf.options.marshal=false
+// +protobuf.as=Timestamp
 // +protobuf.options.(gogoproto.goproto_stringer)=false
-type FieldsV1 struct {
-	// Raw is the underlying serialization of this object.
-	Raw []byte `json:"-" protobuf:"bytes,1,opt,name=Raw"`
-}
-// A label selector requirement is a selector that contains values, a key, and an operator that
-// relates the key and values.
-type LabelSelectorRequirement struct {
-	// key is the label key that the selector applies to.
-	Key string `json:"key" protobuf:"bytes,1,opt,name=key"`
-	// operator represents a key's relationship to a set of values.
-	// Valid operators are In, NotIn, Exists and DoesNotExist.
-	Operator LabelSelectorOperator `json:"operator" protobuf:"bytes,2,opt,name=operator,casttype=LabelSelectorOperator"`
-	// values is an array of string values. If the operator is In or NotIn,
-	// the values array must be non-empty. If the operator is Exists or DoesNotExist,
-	// the values array must be empty. This array is replaced during a strategic
-	// merge patch.
-	// +optional
-	// +listType=atomic
-	Values []string `json:"values,omitempty" protobuf:"bytes,3,rep,name=values"`
+type Time struct {
+	time.Time `protobuf:"-"`
 }
 
-// A label selector operator is the set of operators that can be used in a selector requirement.
-type LabelSelectorOperator string
 // TypeMeta describes an individual object in an API response or request
 // with strings representing the type of the object and its API schema version.
 // Structures that are versioned or persisted should inline TypeMeta.
@@ -272,64 +332,4 @@ type TypeMeta struct {
 	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
 	// +optional
 	APIVersion string `json:"apiVersion,omitempty" protobuf:"bytes,2,opt,name=apiVersion"`
-}
-
-// ManagedFieldsEntry is a workflow-id, a FieldSet and the group version of the resource
-// that the fieldset applies to.
-type ManagedFieldsEntry struct {
-	// Manager is an identifier of the workflow managing these fields.
-	Manager string `json:"manager,omitempty" protobuf:"bytes,1,opt,name=manager"`
-	// Operation is the type of operation which lead to this ManagedFieldsEntry being created.
-	// The only valid values for this field are 'Apply' and 'Update'.
-	Operation ManagedFieldsOperationType `json:"operation,omitempty" protobuf:"bytes,2,opt,name=operation,casttype=ManagedFieldsOperationType"`
-	// APIVersion defines the version of this resource that this field set
-	// applies to. The format is "group/version" just like the top-level
-	// APIVersion field. It is necessary to track the version of a field
-	// set because it cannot be automatically converted.
-	APIVersion string `json:"apiVersion,omitempty" protobuf:"bytes,3,opt,name=apiVersion"`
-	// Time is the timestamp of when the ManagedFields entry was added. The
-	// timestamp will also be updated if a field is added, the manager
-	// changes any of the owned fields value or removes a field. The
-	// timestamp does not update when a field is removed from the entry
-	// because another manager took it over.
-	// +optional
-	Time *Time `json:"time,omitempty" protobuf:"bytes,4,opt,name=time"`
-
-	// FieldsType is the discriminator for the different fields format and version.
-	// There is currently only one possible value: "FieldsV1"
-	FieldsType string `json:"fieldsType,omitempty" protobuf:"bytes,6,opt,name=fieldsType"`
-	// FieldsV1 holds the first JSON version format as described in the "FieldsV1" type.
-	// +optional
-	FieldsV1 *FieldsV1 `json:"fieldsV1,omitempty" protobuf:"bytes,7,opt,name=fieldsV1"`
-
-	// Subresource is the name of the subresource used to update that object, or
-	// empty string if the object was updated through the main resource. The
-	// value of this field is used to distinguish between managers, even if they
-	// share the same name. For example, a status update will be distinct from a
-	// regular update using the same manager name.
-	// Note that the APIVersion field is not related to the Subresource field and
-	// it always corresponds to the version of the main resource.
-	Subresource string `json:"subresource,omitempty" protobuf:"bytes,8,opt,name=subresource"`
-}
-// A label selector is a label query over a set of resources. The result of matchLabels and
-// matchExpressions are ANDed. An empty label selector matches all objects. A null
-// label selector matches no objects.
-// +structType=atomic
-type LabelSelector struct {
-	// matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-	// map is equivalent to an element of matchExpressions, whose key field is "key", the
-	// operator is "In", and the values array contains only "value". The requirements are ANDed.
-	// +optional
-	MatchLabels map[string]string `json:"matchLabels,omitempty" protobuf:"bytes,1,rep,name=matchLabels"`
-	// matchExpressions is a list of label selector requirements. The requirements are ANDed.
-	// +optional
-	// +listType=atomic
-	MatchExpressions []LabelSelectorRequirement `json:"matchExpressions,omitempty" protobuf:"bytes,2,rep,name=matchExpressions"`
-}
-
-// Duration is a wrapper around time.Duration which supports correct
-// marshaling to YAML and JSON. In particular, it marshals into strings, which
-// can be used as map keys in json.
-type Duration struct {
-	time.Duration `protobuf:"varint,1,opt,name=duration,casttype=time.Duration"`
 }

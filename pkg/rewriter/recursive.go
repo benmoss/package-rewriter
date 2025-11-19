@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -553,7 +554,15 @@ func (r *RecursiveRewriter) generateOutput() error {
 		return err
 	}
 
-	for pkgPath, pkgInfo := range r.packages {
+	// Sort package paths for deterministic output
+	var pkgPaths []string
+	for pkgPath := range r.packages {
+		pkgPaths = append(pkgPaths, pkgPath)
+	}
+	sort.Strings(pkgPaths)
+
+	for _, pkgPath := range pkgPaths {
+		pkgInfo := r.packages[pkgPath]
 		if len(pkgInfo.Decls) == 0 {
 			continue
 		}
@@ -581,14 +590,49 @@ func (r *RecursiveRewriter) generateOutput() error {
 			importDecl := &ast.GenDecl{
 				Tok: token.IMPORT,
 			}
+
+			// Check for alias conflicts (same alias pointing to different packages)
+			aliasToPackages := make(map[string][]string) // alias -> list of package paths
 			for path, aliases := range pkgInfo.Imports {
+				for alias := range aliases {
+					aliasToPackages[alias] = append(aliasToPackages[alias], path)
+				}
+			}
+
+			// Warn about conflicts
+			for alias, packages := range aliasToPackages {
+				if len(packages) > 1 {
+					slog.Warn("Import alias conflict detected in generated code",
+						"package", pkgPath,
+						"alias", alias,
+						"conflictingPackages", packages,
+						"resolution", "The generated code will import all packages with their respective aliases, but only one can use this specific alias. Consider using different aliases in your types.")
+				}
+			}
+
+			// Sort import paths for deterministic output
+			var importPaths []string
+			for path := range pkgInfo.Imports {
+				importPaths = append(importPaths, path)
+			}
+			sort.Strings(importPaths)
+
+			for _, path := range importPaths {
+				aliases := pkgInfo.Imports[path]
 				// Only add import if we actually generated that package
 				if _, exists := r.packages[path]; !exists && !r.isStdlib(path) {
 					continue // Skip imports to packages we didn't extract
 				}
 
-				// Add an import for each unique alias for this path
+				// Sort aliases for deterministic output
+				var sortedAliases []string
 				for alias := range aliases {
+					sortedAliases = append(sortedAliases, alias)
+				}
+				sort.Strings(sortedAliases)
+
+				// Add an import for each unique alias for this path
+				for _, alias := range sortedAliases {
 					importSpec := &ast.ImportSpec{
 						Path: &ast.BasicLit{
 							Kind:  token.STRING,
@@ -606,8 +650,15 @@ func (r *RecursiveRewriter) generateOutput() error {
 			}
 		}
 
-		// Add type declarations
-		for _, info := range pkgInfo.Decls {
+		// Add type declarations in sorted order for deterministic output
+		var typeNames []string
+		for typeName := range pkgInfo.Decls {
+			typeNames = append(typeNames, typeName)
+		}
+		sort.Strings(typeNames)
+
+		for _, typeName := range typeNames {
+			info := pkgInfo.Decls[typeName]
 			newFile.Decls = append(newFile.Decls, info.Decl)
 		}
 
@@ -633,7 +684,15 @@ func (r *RecursiveRewriter) generateOutput() error {
 }
 
 func (r *RecursiveRewriter) generateModuleFiles() error {
-	for modulePath, moduleInfo := range r.modules {
+	// Sort module paths for deterministic output
+	var modulePaths []string
+	for modulePath := range r.modules {
+		modulePaths = append(modulePaths, modulePath)
+	}
+	sort.Strings(modulePaths)
+
+	for _, modulePath := range modulePaths {
+		moduleInfo := r.modules[modulePath]
 		// Skip stdlib modules
 		if r.isStdlib(modulePath) {
 			continue
@@ -689,6 +748,9 @@ func (r *RecursiveRewriter) updateGoModReplaces(goMod *GoModManager) error {
 			modulePaths = append(modulePaths, modulePath)
 		}
 	}
+
+	// Sort module paths for deterministic replace directive order
+	sort.Strings(modulePaths)
 
 	// Add replace directives
 	for _, modulePath := range modulePaths {

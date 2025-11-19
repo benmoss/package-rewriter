@@ -12,9 +12,9 @@ require (
 	k8s.io/apimachinery v0.34.1 // indirect
 )
 
-replace github.com/argoproj/gitops-engine => ./generated/github.com/argoproj/gitops-engine
-
 replace github.com/argoproj/argo-cd/v3 => ./generated/github.com/argoproj/argo-cd/v3
+
+replace github.com/argoproj/gitops-engine => ./generated/github.com/argoproj/gitops-engine
 
 replace github.com/external-secrets/external-secrets/apis => ./generated/github.com/external-secrets/external-secrets/apis
 
